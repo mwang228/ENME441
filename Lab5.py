@@ -58,10 +58,8 @@ def update_leds():
         time.sleep(0.01)
 
 def main():
-    try:       
-        # Initialize jumper state
-        global temp
-        temp = read_jumper_state()
-        initial_direction = "REVERSE" if temp else "FORWARD"
-        update_leds()
-        
+    global temp
+    temp = read_jumper_state()
+    initial_direction = "REVERSE" if temp else "FORWARD"
+    update_leds()
+    
