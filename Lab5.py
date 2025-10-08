@@ -41,9 +41,8 @@ def check_direction():
 
 def brightness(phase_offset):
     current_time = time.time()
-    phase = 2 * math.pi * f * current_time + (phase_offset * direction)
-    brightness = (math.sin(phase)) ** 2
-    duty_cycle = brightness * 100
+    brightness = (math.sin(2 * math.pi * f * current_time + (phase_offset * direction))) ** 2
+    duty_cycle = brightness * 100 #%
     return duty_cycle
 
 def update_leds():
