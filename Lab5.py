@@ -67,9 +67,4 @@ def main():
     initial_direction = "REVERSE" if temp else "FORWARD"
     update_leds()
     
-try:
-    main()
-except KeyboardInterrupt:
-    for pwm in pwm_objects:
-        pwm.stop()
-    GPIO.cleanup()
+main()
