@@ -24,7 +24,7 @@ def setup():
         pwm_objects.append(pwm)
     
     # Setup jumper pin with pull-down resistor
-    GPIO.setup(jumper, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+    GPIO.setup(jumper, GPIO.IN)
 
 def read_jumper():
     return GPIO.input(jumper)
