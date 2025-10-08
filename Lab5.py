@@ -57,7 +57,7 @@ def update_leds():
         
         time.sleep(0.01)
 
-def main():
+while True:
     global temp
     temp = read_jumper_state()
     initial_direction = "REVERSE" if temp else "FORWARD"
