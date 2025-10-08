@@ -4,7 +4,6 @@ import math
 import threading
 
 GPIO.setmode(GPIO.BCM)
-GPIO.setwarnings(False)
 ledPin = [17, 18, 27, 22, 23]
 jumper = 24
 
