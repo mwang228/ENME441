@@ -54,8 +54,6 @@ def update_leds():
             phase_offset = i * theta
             duty_cycle = brightness(phase_offset)
             pwm.ChangeDutyCycle(duty_cycle)
-        
-        time.sleep(0.01)
 
 def main():
     setup()
