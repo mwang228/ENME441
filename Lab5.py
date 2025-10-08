@@ -22,8 +22,6 @@ def setup():
         pwm = GPIO.PWM(pin, basef)
         pwm.start(0)  # start with 0% duty cycle
         pwm_objects.append(pwm)
-    
-    # Setup jumper pin with pull-down resistor
     GPIO.setup(jumper, GPIO.IN)
 
 def read_jumper():
@@ -31,7 +29,6 @@ def read_jumper():
 
 def check_direction():
     global direction, temp
-    
     current = read_jumper()
     
     # check if jumper changed
@@ -64,7 +61,7 @@ def main():
     setup()
     global temp
     temp = read_jumper()
-    initial_direction = "REVERSE" if temp else "FORWARD"
+    initial_direction = temp
     update_leds()
     
 main()
