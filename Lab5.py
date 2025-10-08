@@ -59,7 +59,6 @@ def main():
     setup()
     global temp
     temp = read_jumper()
-    initial_direction = temp
     update_leds()
     
 main()
