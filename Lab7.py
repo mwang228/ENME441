@@ -8,58 +8,128 @@ leds = {
     '3': PWMOutputDevice(22),
 }
 
+# Initialize brightness levels
 brightness = {'1': 0, '2': 0, '3': 0}
 
-def handle_post(data):
-    # Parse form data like 'led=1&brightness=50'
-    lines = data.split('\r\n')
-    body = lines[-1]
+def parse_post_data(data):
+    """Parse POST data from HTTP request"""
+    # Find the empty line that separates headers from body
+    headers_end = data.find('\r\n\r\n')
+    if headers_end == -1:
+        return {}
+    
+    body = data[headers_end + 4:]  # Skip past \r\n\r\n
     params = body.split('&')
-    led = None
-    level = None
-    for p in params:
-        k, v = p.split('=')
-        if k == 'led': led = v
-        if k == 'brightness': level = int(v)
-    if led and level is not None:
-        brightness[led] = level
-        leds[led].value = level / 100.0
+    post_data = {}
+    
+    for param in params:
+        if '=' in param:
+            key, value = param.split('=', 1)
+            post_data[key] = value
+    
+    return post_data
 
 def generate_html():
-    # Returns HTML form and status page
-    return f"""
-    <html>
-    <body>
-        <h2>Brightness level:</h2>
+    """Generate HTML form with current brightness levels"""
+    return f"""HTTP/1.1 200 OK
+Content-Type: text/html
+Connection: close
+
+<html>
+<head>
+    <title>LED Brightness Control</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; margin: 40px; }}
+        .status {{ background: #f0f0f0; padding: 15px; border-radius: 5px; margin-bottom: 20px; }}
+        .form-group {{ margin: 15px 0; }}
+        input[type="range"] {{ width: 200px; }}
+        input[type="submit"] {{ padding: 8px 16px; background: #007cba; color: white; border: none; border-radius: 4px; }}
+    </style>
+</head>
+<body>
+    <h1>LED Brightness Control</h1>
+    
+    <div class="status">
+        <h2>Current Brightness Levels:</h2>
         <ul>
-            <li>LED 1 ({brightness['1']}%)</li>
-            <li>LED 2 ({brightness['2']}%)</li>
-            <li>LED 3 ({brightness['3']}%)</li>
+            <li>LED 1: {brightness['1']}%</li>
+            <li>LED 2: {brightness['2']}%</li>
+            <li>LED 3: {brightness['3']}%</li>
         </ul>
-        <form method="POST">
-            Select LED:<br>
-            <input type="radio" name="led" value="1"> LED 1<br>
+    </div>
+    
+    <form method="POST">
+        <div class="form-group">
+            <strong>Select LED:</strong><br>
+            <input type="radio" name="led" value="1" required> LED 1<br>
             <input type="radio" name="led" value="2"> LED 2<br>
             <input type="radio" name="led" value="3"> LED 3<br>
-            Brightness: <input type="range" name="brightness" min="0" max="100"><br>
-            <input type="submit" value="Change Brightness">
-        </form>
-    </body>
-    </html>
-    """
+        </div>
+        
+        <div class="form-group">
+            <strong>Brightness: <span id="brightnessValue">0</span>%</strong><br>
+            <input type="range" name="brightness" id="brightnessSlider" 
+                   min="0" max="100" value="0" 
+                   oninput="document.getElementById('brightnessValue').textContent = this.value">
+        </div>
+        
+        <input type="submit" value="Change Brightness">
+    </form>
+    
+    <script>
+        // Update slider value display
+        document.getElementById('brightnessSlider').oninput();
+    </script>
+</body>
+</html>"""
 
 def start_server():
+    """Start the HTTP server"""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind(('0.0.0.0', 8080))
-        s.listen()
+        s.listen(5)
+        print("Server running on http://0.0.0.0:8080")
+        print("Access from browser: http://[YOUR_PI_IP]:8080")
+        
         while True:
             conn, addr = s.accept()
             with conn:
-                data = conn.recv(1024).decode()
-                if 'POST' in data:
-                    handle_post(data)
+                print(f"Connection from {addr}")
+                
+                # Receive and decode the request
+                data = conn.recv(1024).decode('utf-8')
+                print(f"Received request: {data.split()[0]}")  # Print GET or POST
+                
+                if data.startswith('POST'):
+                    # Parse the POST data
+                    post_data = parse_post_data(data)
+                    print(f"POST data: {post_data}")
+                    
+                    # Update LED brightness
+                    led = post_data.get('led')
+                    brightness_val = post_data.get('brightness')
+                    
+                    if led and brightness_val:
+                        try:
+                            brightness[led] = int(brightness_val)
+                            leds[led].value = brightness[led] / 100.0
+                            print(f"Set LED {led} to {brightness[led]}%")
+                        except ValueError:
+                            print("Invalid brightness value")
+                
+                # Send the HTML response
                 response = generate_html()
-                conn.send(b'HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n' + response.encode())
+                conn.send(response.encode('utf-8'))
+                
+            print("Connection closed\n")
 
 if __name__ == '__main__':
-    start_server()
+    try:
+        start_server()
+    except KeyboardInterrupt:
+        print("\nServer stopped by user")
+    finally:
+        # Clean up GPIO
+        for led in leds.values():
+            led.close()
