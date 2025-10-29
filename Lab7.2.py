@@ -37,7 +37,6 @@ def get_post_data(request_data):
 
 def create_html_page():
     # Build the HTML page with JavaScript for real-time control
-    # Use double curly braces to escape them in the f-string
     html_content = f"""HTTP/1.1 200 OK
 Content-Type: text/html
 Connection: close
