@@ -172,24 +172,20 @@ Connection: close
                 status.style.display = 'none';
             }}, 2000);
         }}
-        
-        // Add smooth interaction for sliders
-        document.addEventListener('DOMContentLoaded', function() {{
-            var sliders = document.querySelectorAll('.slider');
-            sliders.forEach(function(slider) {{
-                slider.addEventListener('mousedown', function() {{
-                    this.style.cursor = 'grabbing';
-                }});
-                slider.addEventListener('mouseup', function() {{
-                    this.style.cursor = 'grab';
-                }});
-            }});
-        }});
     </script>
 </body>
 </html>"""
     
     return html_content
+
+def send_simple_response(conn, message):
+    """Send a simple response for AJAX requests"""
+    response = f"""HTTP/1.1 200 OK
+Content-Type: text/plain
+Connection: close
+
+{message}"""
+    conn.send(response.encode('utf-8'))
 
 # Main server code
 server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -210,7 +206,7 @@ try:
         request = client_conn.recv(1024).decode('utf-8')
         
         if request:
-            # Check if it's a POST request
+            # Check if it's a POST request from JavaScript
             if request.startswith('POST'):
                 print(f"POST request from {client_addr}")
                 
@@ -233,14 +229,24 @@ try:
                         
                         print(f"LED {led_number} set to {bright_level}%")
                         
+                        # Send simple success response for AJAX
+                        send_simple_response(client_conn, f"LED {led_number} set to {bright_level}%")
+                        
                     except ValueError:
                         print("Error: Could not convert brightness to number")
+                        send_simple_response(client_conn, "Error: Invalid brightness value")
                     except KeyError:
                         print("Error: Invalid LED number")
+                        send_simple_response(client_conn, "Error: Invalid LED number")
+                else:
+                    # Missing data, still send HTML page
+                    html_page = create_html_page()
+                    client_conn.send(html_page.encode('utf-8'))
             
-            # Send the HTML page back to client
-            html_page = create_html_page()
-            client_conn.send(html_page.encode('utf-8'))
+            else:
+                # It's a GET request, send the HTML page
+                html_page = create_html_page()
+                client_conn.send(html_page.encode('utf-8'))
         
         # Close the connection
         client_conn.close()
