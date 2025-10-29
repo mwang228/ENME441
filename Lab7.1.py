@@ -84,4 +84,24 @@ def start_server():
         s.bind(('0.0.0.0', 8080))
         s.listen(5)
 
+        while True:
+            conn, addr = s.accept()
+            with conn:
+                data = conn.recv(1024).decode('utf-8')
+                
+                if data.startswith('POST'):
+                    post_data = parse_post_data(data)
+                    
+                    led = post_data.get('led')
+                    brightness_val = post_data.get('brightness')
+                    
+                    if led and brightness_val:
+                        brightness[led] = int(brightness_val)
+                        leds[led].value = brightness[led] / 100.0
+                        print(f"Set LED {led} to {brightness[led]}%")
+
+                
+                response = generate_html()
+                conn.send(response.encode('utf-8'))
+
 start_server()
