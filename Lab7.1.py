@@ -1,24 +1,20 @@
 import socket
 from gpiozero import PWMOutputDevice
 
-# Initialize PWM LEDs on GPIO pins 17, 27, 22
 leds = {
     '1': PWMOutputDevice(17),
     '2': PWMOutputDevice(27),
     '3': PWMOutputDevice(22),
 }
 
-# Initialize brightness levels
 brightness = {'1': 0, '2': 0, '3': 0}
 
 def parse_post_data(data):
-    """Parse POST data from HTTP request"""
-    # Find the empty line that separates headers from body
     headers_end = data.find('\r\n\r\n')
     if headers_end == -1:
         return {}
     
-    body = data[headers_end + 4:]  # Skip past \r\n\r\n
+    body = data[headers_end + 4:]
     params = body.split('&')
     post_data = {}
     
@@ -30,7 +26,6 @@ def parse_post_data(data):
     return post_data
 
 def generate_html():
-    """Generate HTML form with current brightness levels"""
     return f"""HTTP/1.1 200 OK
 Content-Type: text/html
 Connection: close
@@ -84,29 +79,23 @@ Connection: close
 </html>"""
 
 def start_server():
-    """Start the HTTP server"""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind(('0.0.0.0', 8080))
         s.listen(5)
-        print("Server running on http://0.0.0.0:8080")
-        print("Access from browser: http://[YOUR_PI_IP]:8080")
         
         while True:
             conn, addr = s.accept()
             with conn:
                 print(f"Connection from {addr}")
                 
-                # Receive and decode the request
                 data = conn.recv(1024).decode('utf-8')
-                print(f"Received request: {data.split()[0]}")  # Print GET or POST
+                print(f"Received request: {data.split()[0]}")
                 
                 if data.startswith('POST'):
-                    # Parse the POST data
                     post_data = parse_post_data(data)
                     print(f"POST data: {post_data}")
                     
-                    # Update LED brightness
                     led = post_data.get('led')
                     brightness_val = post_data.get('brightness')
                     
@@ -118,7 +107,6 @@ def start_server():
                         except ValueError:
                             print("Invalid brightness value")
                 
-                # Send the HTML response
                 response = generate_html()
                 conn.send(response.encode('utf-8'))
                 
