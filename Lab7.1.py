@@ -1,7 +1,6 @@
 import socket
 from gpiozero import PWMOutputDevice
 
-# Setup the LEDs
 led1 = PWMOutputDevice(17)
 led2 = PWMOutputDevice(27)
 led3 = PWMOutputDevice(22)
@@ -12,19 +11,15 @@ leds = {
     '3': led3
 }
 
-# Track brightness for each LED
 brightness = {'1': 0, '2': 0, '3': 0}
 
 def get_post_data(request_data):
-    # Look for the blank line that separates headers from data
     blank_line = request_data.find('\r\n\r\n')
     if blank_line == -1:
         return {}
     
-    # Get everything after the blank line
     post_body = request_data[blank_line + 4:]
     
-    # Split into key=value pairs
     pairs = post_body.split('&')
     result = {}
     
@@ -36,7 +31,6 @@ def get_post_data(request_data):
     return result
 
 def create_html_page():
-    # Build the HTML page with current brightness values
     html_content = f"""HTTP/1.1 200 OK
 Content-Type: text/html
 Connection: close
@@ -78,66 +72,37 @@ Connection: close
     
     return html_content
 
-# Main server code
 server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 server_socket.bind(('0.0.0.0', 8080))
 server_socket.listen(5)
 
-print("Server started on port 8080")
-print("Go to http://your-pi-address:8080 in your browser")
+print("http://your-pi-address:8080")
 
-try:
-    while True:
-        # Wait for a connection
-        client_conn, client_addr = server_socket.accept()
-        
-        # Get the request from client
-        request = client_conn.recv(1024).decode('utf-8')
-        
-        if request:
-            # Check if it's a POST request
-            if request.startswith('POST'):
-                print(f"POST request from {client_addr}")
-                
-                # Parse the POST data
-                post_data = get_post_data(request)
-                
-                # Get the LED and brightness values
-                led_number = post_data.get('led')
-                brightness_value = post_data.get('brightness')
-                
-                # If we got both values, update the LED
-                if led_number and brightness_value:
-                    try:
-                        # Convert to integer and update
-                        bright_level = int(brightness_value)
-                        brightness[led_number] = bright_level
-                        
-                        # Set the actual LED brightness
-                        leds[led_number].value = bright_level / 100.0
-                        
-                        print(f"LED {led_number} set to {bright_level}%")
-                        
-                    except ValueError:
-                        print("Error: Could not convert brightness to number")
-                    except KeyError:
-                        print("Error: Invalid LED number")
+
+while True:
+    client_conn, client_addr = server_socket.accept()
+    
+    request = client_conn.recv(1024).decode('utf-8')
+    
+    if request:
+        if request.startswith('POST'):
+            post_data = get_post_data(request)
             
-            # Send the HTML page back to client
-            html_page = create_html_page()
-            client_conn.send(html_page.encode('utf-8'))
-        
-        # Close the connection
-        client_conn.close()
+            led_number = post_data.get('led')
+            brightness_value = post_data.get('brightness')
+            
+            if led_number and brightness_value:
+                bright_level = int(brightness_value)
+                brightness[led_number] = bright_level
+                
+                leds[led_number].value = bright_level / 100.0
+                
+                print(f"LED {led_number} set to {bright_level}%")
 
-except KeyboardInterrupt:
-    print("\nShutting down server...")
-    server_socket.close()
+        html_page = create_html_page()
+        client_conn.send(html_page.encode('utf-8'))
     
-    # Turn off all LEDs
-    for led in leds.values():
-        led.value = 0
-        led.close()
-    
-    print("Server stopped")
+    # Close the connection
+    client_conn.close()
+
