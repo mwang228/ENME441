@@ -83,33 +83,5 @@ def start_server():
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind(('0.0.0.0', 8080))
         s.listen(5)
-        
-        while True:
-            conn, addr = s.accept()
-            with conn:
-                print(f"Connection from {addr}")
-                
-                data = conn.recv(1024).decode('utf-8')
-                print(f"Received request: {data.split()[0]}")
-                
-                if data.startswith('POST'):
-                    post_data = parse_post_data(data)
-                    print(f"POST data: {post_data}")
-                    
-                    led = post_data.get('led')
-                    brightness_val = post_data.get('brightness')
-                    
-                    if led and brightness_val:
-                        try:
-                            brightness[led] = int(brightness_val)
-                            leds[led].value = brightness[led] / 100.0
-                            print(f"Set LED {led} to {brightness[led]}%")
-                        except ValueError:
-                            print("Invalid brightness value")
-                
-                response = generate_html()
-                conn.send(response.encode('utf-8'))
-                
-            print("Connection closed\n")
 
 start_server()
