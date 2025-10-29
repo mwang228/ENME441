@@ -102,7 +102,4 @@ while True:
 
         html_page = create_html_page()
         client_conn.send(html_page.encode('utf-8'))
-    
-    # Close the connection
     client_conn.close()
-
