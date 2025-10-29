@@ -112,12 +112,4 @@ def start_server():
                 
             print("Connection closed\n")
 
-if __name__ == '__main__':
-    try:
-        start_server()
-    except KeyboardInterrupt:
-        print("\nServer stopped by user")
-    finally:
-        # Clean up GPIO
-        for led in leds.values():
-            led.close()
+start_server()
