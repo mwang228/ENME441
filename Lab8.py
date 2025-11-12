@@ -1,4 +1,4 @@
-# stepper_class_shiftregister_multiprocessing.py
+# I dont have a partner, so I don't have a second motor. I manually swapped out the motor for testing, timing things to get a rough estimate that there is multiprocessing occurring.
 
 import time
 import multiprocessing
