@@ -78,11 +78,6 @@ class Stepper:
         with self.angle.get_lock():
             self.angle.value = 0
 
-    def getAngle(self):
-        """Helper method to get current angle"""
-        with self.angle.get_lock():
-            return self.angle.value
-
 if __name__ == '__main__':
 
     s = Shifter(data=16, latch=20, clock=21)
