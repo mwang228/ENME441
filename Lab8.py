@@ -6,9 +6,6 @@ import math
 from shifter import Shifter
 
 class Stepper:
-    """
-    Supports simultaneous operation of multiple stepper motors using shift registers.
-    """
 
     # Class attributes:
     num_steppers = 0
@@ -19,7 +16,6 @@ class Stepper:
 
     def __init__(self, shifter, lock):
         self.s = shifter
-        # Use multiprocessing.Value for shared angle tracking
         self.angle = multiprocessing.Value('d', 0.0)  # 'd' for double
         self.step_state = 0
         self.shifter_bit_start = 4 * Stepper.num_steppers
@@ -33,20 +29,17 @@ class Stepper:
             return int(abs(x)/x)
 
     def __step(self, dir):
-        """Modified to allow simultaneous motor operation"""
         self.step_state += dir
         self.step_state %= 8
         
-        # Clear only this motor's bits, preserve others
         mask_clear = ~(0b1111 << self.shifter_bit_start)
         mask_set = Stepper.seq[self.step_state] << self.shifter_bit_start
         
-        Stepper.shifter_outputs &= mask_clear  # Clear this motor's bits
-        Stepper.shifter_outputs |= mask_set    # Set new bits for this motor
+        Stepper.shifter_outputs &= mask_clear
+        Stepper.shifter_outputs |= mask_set
         
         self.s.shiftByte(Stepper.shifter_outputs)
         
-        # Update shared angle value
         with self.angle.get_lock():
             self.angle.value += dir/Stepper.steps_per_degree
             self.angle.value %= 360
@@ -66,29 +59,22 @@ class Stepper:
         p.start()
 
     def goAngle(self, target_angle):
-        """Move to absolute angle taking shortest path"""
-        # Get current angle from shared memory
         with self.angle.get_lock():
             current_angle = self.angle.value
         
-        # Normalize angles to [0, 360)
         current_angle %= 360
         target_angle %= 360
-        
-        # Calculate the difference and find shortest path
+
         diff = target_angle - current_angle
         
-        # Handle wrap-around for shortest path
         if diff > 180:
             diff -= 360
         elif diff < -180:
             diff += 360
         
-        # Start rotation process
         self.rotate(diff)
 
     def zero(self):
-        """Set motor zero point"""
         with self.angle.get_lock():
             self.angle.value = 0
 
@@ -96,9 +82,6 @@ class Stepper:
         """Helper method to get current angle"""
         with self.angle.get_lock():
             return self.angle.value
-
-
-# Example use with the required demonstration sequence:
 
 if __name__ == '__main__':
 
@@ -111,11 +94,7 @@ if __name__ == '__main__':
     # Zero the motors
     m1.zero()
     m2.zero()
-
-    # Required demonstration sequence
-    print("Starting demonstration sequence...")
     
-    # These should run simultaneously
     m1.goAngle(90)
     m1.goAngle(-45)
 
@@ -126,8 +105,6 @@ if __name__ == '__main__':
     m1.goAngle(135)
     m1.goAngle(0)
 
-    # Wait for processes to complete
-    time.sleep(10)  # Adjust based on your motor speed
+    time.sleep(10)  
     
-    print("Demonstration complete")
-    print(f"Final angles - m1: {m1.getAngle():.1f}°, m2: {m2.getAngle():.1f}°")
+    print("Done")
