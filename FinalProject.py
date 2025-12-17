@@ -2,9 +2,10 @@
 """
 ENME441 Laser Turret - COMPETITION READY
 FIXED VERSION: 
-1. Fixed altitude motor auto-return
-2. No confirmation - fires immediately
-3. Shows target location details
+1. Fixed altitude motor auto-return timing
+2. Motor test now moves both motors simultaneously
+3. No confirmation - fires immediately
+4. Shows target location details
 """
 
 import RPi.GPIO as GPIO
@@ -33,8 +34,6 @@ class CompetitionTurret:
         # Motor limits (±120° from home)
         self.MAX_AZIMUTH_LEFT = -120    # degrees (negative = left)
         self.MAX_AZIMUTH_RIGHT = 120    # degrees (positive = right)
-        
-        # Starting orientation: laser points to CENTER of ring
         
         # Position tracking
         self.azimuth_angle = 0.0    # Current angle in degrees (0 = home)
@@ -180,7 +179,7 @@ class CompetitionTurret:
     def move_motors_sync(self, az_steps, alt_steps, delay=0.001):
         """
         Move both motors with synchronized speed
-        Returns True if successful, False if hit limits
+        FIXED: Proper timing for altitude motor with ALTITUDE_SPEED_FACTOR
         """
         if az_steps == 0 and alt_steps == 0:
             return True
@@ -191,19 +190,34 @@ class CompetitionTurret:
         az_steps_abs = abs(az_steps)
         alt_steps_abs = abs(alt_steps)
         
-        # Calculate timing
-        if az_steps_abs > 0:
+        # IMPORTANT FIX: Calculate timing based on steps, not degrees
+        # Both motors should complete at approximately the same time
+        
+        # Calculate total steps accounting for speed factor
+        # Altitude motor moves ALTITUDE_SPEED_FACTOR steps per iteration
+        effective_alt_steps = alt_steps_abs / self.ALTITUDE_SPEED_FACTOR
+        
+        # Determine which motor has more "work" to do
+        if az_steps_abs > effective_alt_steps:
+            # Azimuth is the limiting factor
             az_delay = delay
-            total_time = az_steps_abs * az_delay
-            
             if alt_steps_abs > 0:
-                # Altitude moves faster, so needs shorter delay
-                alt_delay = total_time / alt_steps_abs / self.ALTITUDE_SPEED_FACTOR
+                # Altitude needs to move faster to keep up
+                alt_delay = az_delay * (effective_alt_steps / az_steps_abs)
             else:
                 alt_delay = delay
         else:
-            az_delay = delay
-            alt_delay = delay
+            # Altitude is the limiting factor
+            if alt_steps_abs > 0:
+                alt_delay = delay / self.ALTITUDE_SPEED_FACTOR
+                az_delay = alt_delay * (az_steps_abs / effective_alt_steps)
+            else:
+                az_delay = delay
+                alt_delay = delay
+        
+        # Ensure minimum delays
+        az_delay = max(az_delay, 0.0001)
+        alt_delay = max(alt_delay, 0.0001)
         
         # Move motors with proper timing
         az_counter = 0
@@ -228,7 +242,7 @@ class CompetitionTurret:
             if alt_counter < alt_steps_abs and (current_time - last_alt_time) >= alt_delay:
                 self.step_altitude_fast(alt_dir)
                 last_alt_time = current_time
-                alt_counter += 1
+                alt_counter += self.ALTITUDE_SPEED_FACTOR
             
             # Small sleep to prevent CPU hogging
             time.sleep(min(az_delay, alt_delay) / 10)
@@ -563,15 +577,16 @@ class CompetitionTurret:
         
         return True
     
-    # ========== MOTOR TEST (90° VERSION) ==========
+    # ========== MOTOR TEST (BOTH MOTORS SIMULTANEOUSLY) ==========
     
     def motor_test_90(self):
-        """Test motors with 90° rotations"""
+        """Test both motors simultaneously with 90° rotations"""
         print("\n" + "="*60)
-        print("MOTOR TEST: 90° rotations")
+        print("MOTOR TEST: 90° rotations (BOTH MOTORS)")
         print("="*60)
         print("Starting from current position...")
         print(f"Current: Az={self.azimuth_angle:.1f}°, Alt={self.altitude_angle:.1f}°")
+        print("Testing both motors simultaneously!")
         
         test_cycles = 0
         max_cycles = 3  # Limit number of test cycles
@@ -581,10 +596,10 @@ class CompetitionTurret:
                 test_cycles += 1
                 print(f"\n--- Test Cycle {test_cycles} ---")
                 
-                # Check if we can move 90° to the right
+                # Test 1: Move both motors 90° right and 30° up simultaneously
                 if self.azimuth_angle + 90 <= self.MAX_AZIMUTH_RIGHT:
-                    print("1. 90° to the right")
-                    success = self.move_motors_degrees_sync(90, 0, 0.0005)
+                    print("1. 90° right + 30° up (simultaneously)")
+                    success = self.move_motors_degrees_sync(90, 30, 0.0005)
                     if not success:
                         print("⚠ Hit motor limit")
                         break
@@ -594,10 +609,10 @@ class CompetitionTurret:
                     print(f"⚠ Cannot move 90° right (would exceed {self.MAX_AZIMUTH_RIGHT}° limit)")
                     break
                 
-                # Check if we can move 90° to the left (back to start)
+                # Test 2: Move both motors 90° left and 30° down simultaneously
                 if self.azimuth_angle - 90 >= self.MAX_AZIMUTH_LEFT:
-                    print("2. 90° to the left (back to start)")
-                    success = self.move_motors_degrees_sync(-90, 0, 0.0005)
+                    print("2. 90° left + 30° down (simultaneously)")
+                    success = self.move_motors_degrees_sync(-90, -30, 0.0005)
                     if not success:
                         print("⚠ Hit motor limit")
                         break
@@ -607,19 +622,29 @@ class CompetitionTurret:
                     print(f"⚠ Cannot move 90° left (would exceed {self.MAX_AZIMUTH_LEFT}° limit)")
                     break
                 
-                # Optional: Add some altitude movement
-                print("3. Small altitude test")
-                success = self.move_motors_degrees_sync(0, 30, 0.0005)
-                if success:
-                    time.sleep(1)
-                    self.move_motors_degrees_sync(0, -30, 0.0005)
-                    time.sleep(1)
+                # Test 3: Move in a diagonal pattern
+                print("3. Diagonal movement test")
+                # Up-right
+                success = self.move_motors_degrees_sync(45, 15, 0.0005)
+                if not success:
+                    print("⚠ Hit motor limit")
+                    break
+                time.sleep(1)
+                
+                # Down-left
+                success = self.move_motors_degrees_sync(-45, -15, 0.0005)
+                if not success:
+                    print("⚠ Hit motor limit")
+                    break
+                time.sleep(1)
                 
         except KeyboardInterrupt:
             print("\nTest stopped by user")
         finally:
             self.running = False
             print(f"\nMotor test completed ({test_cycles} cycle(s))")
+            print("Returning to original position...")
+            self.go_to_home()
     
     # ========== LASER CONTROL ==========
     
@@ -683,8 +708,8 @@ def main():
     print("Features:")
     print("  • Laser points to RING CENTER at home position")
     print("  • Motor limits: ±120° from home")
-    print("  • Auto-return to home on exit (FIXED)")
-    print("  • Motor test: ±90° rotations")
+    print("  • Fixed altitude motor auto-return")
+    print("  • Motor test: BOTH motors move simultaneously")
     print("  • Immediate target firing with location display")
     print("="*70)
     
@@ -698,7 +723,7 @@ def main():
             print("="*70)
             print("1. Calibrate Home Position (Laser points to CENTER)")
             print("2. Set Team Number & Fetch Competition Data")
-            print("3. Motor Test (90° rotations)")
+            print("3. Motor Test (BOTH motors simultaneously)")
             print("4. Find & Fire at Closest Target (fires immediately)")
             print("5. Test Fire Laser (1 second)")
             print("6. Return to Home Position")
