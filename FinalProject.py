@@ -22,6 +22,7 @@ class CompleteTurret:
         
         # Server IPs to try (add your laptop's IP here!)
         self.SERVER_IPS = [
+            "172.20.10.8",        # correct IP
             "192.168.1.254",      # Competition server
             "192.168.137.1",      # Windows hotspot default
             "192.168.43.1",       # Common phone hotspot gateway
