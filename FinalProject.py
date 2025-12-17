@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """
-ENME441 Laser Turret - COMPLETE SYSTEM
-Combines: Motor control + JSON fetching + Targeting
+ENME441 Laser Turret - COMPETITION READY
+Features:
+1. Single IP configuration
+2. Home position calibration
+3. JSON reading with team selection
+4. Motor limits (±120° azimuth)
+5. Targeting closest target with laser firing
+6. Starting orientation: laser points to ring center
 """
 
 import RPi.GPIO as GPIO
@@ -11,45 +17,46 @@ import requests
 import math
 import sys
 
-class CompleteTurret:
-    def __init__(self, team_number="1"):
-        self.team_number = team_number
+class CompetitionTurret:
+    def __init__(self):
+        # ========== CONFIGURATION ==========
+        # SET THIS TO YOUR SERVER IP (from ipconfig/ifconfig)
+        self.SERVER_IP = "172.20.10.8"  # CHANGE THIS to your laptop's IP
+        self.SERVER_URL = f"http://{self.SERVER_IP}:8000/positions.json"
+        
+        # Team number (will be asked later)
+        self.team_number = None
         
         # Motor calibration
         self.AZIMUTH_STEPS_PER_REV = 1024    # Your fast motor
         self.ALTITUDE_STEPS_PER_REV = 4096   # Standard motor
         self.ALTITUDE_SPEED_FACTOR = 4       # Moves 4× faster to match azimuth
         
-        # Server IPs to try (add your laptop's IP here!)
-        self.SERVER_IPS = [
-            "172.20.10.8",        # correct IP
-            "192.168.1.254",      # Competition server
-            "192.168.137.1",      # Windows hotspot default
-            "192.168.43.1",       # Common phone hotspot gateway
-            "192.168.1.100",      # Common laptop IP
-            "10.42.0.1",          # Ubuntu hotspot
-            "172.20.10.1",        # iPhone hotspot
-        ]
+        # Motor limits (±120° from home)
+        self.MAX_AZIMUTH_LEFT = -120    # degrees (negative = left)
+        self.MAX_AZIMUTH_RIGHT = 120    # degrees (positive = right)
         
-        # ADD YOUR LAPTOP'S ACTUAL IP HERE:
-        # Run 'ipconfig' on Windows or 'ifconfig' on Mac/Linux
-        # Look for IP when connected to same network as Pi
-        # Example: self.SERVER_IPS.append("192.168.43.50")
+        # Starting orientation: laser points to CENTER of ring
+        # This means when turret is at home (0,0), laser points inward
+        # We'll handle this in targeting calculations
         
         # Position tracking
-        self.azimuth_position = 0    # Steps from home
-        self.altitude_position = 0   # Steps from home
+        self.azimuth_angle = 0.0    # Current angle in degrees (0 = home)
+        self.altitude_angle = 0.0   # Current angle in degrees (0 = horizontal)
+        self.azimuth_position = 0   # Steps from home
+        self.altitude_position = 0  # Steps from home
         self.azimuth_phase = 0
         self.altitude_phase = 0
         
-        # Competition data
+        # Target tracking
         self.competition_data = None
         self.my_position = None
+        self.targets_hit = set()  # Tracks which targets have been hit
         
-        # GPIO pins for shift register
-        self.SHIFT_CLK = 11  # GPIO11 -> SH_CP (Pin 11)
-        self.LATCH_CLK = 10  # GPIO10 -> ST_CP (Pin 12)
-        self.DATA_PIN = 9    # GPIO9  -> DS    (Pin 14)
+        # GPIO pins
+        self.SHIFT_CLK = 11  # GPIO11 -> SH_CP
+        self.LATCH_CLK = 10  # GPIO10 -> ST_CP
+        self.DATA_PIN = 9    # GPIO9  -> DS
         self.LASER_PIN = 26  # GPIO26 (HIGH = ON, LOW = OFF)
         
         # Stepper sequences (half-step)
@@ -89,7 +96,7 @@ class CompleteTurret:
         
         print("GPIO setup complete - Laser starts OFF (safe)")
     
-    # ========== SHIFT REGISTER CONTROL ==========
+    # ========== MOTOR CONTROL ==========
     
     def shift_out(self, data_byte):
         """Send 8 bits to shift register"""
@@ -111,15 +118,29 @@ class CompleteTurret:
         self.shift_out(combined)
     
     def step_azimuth(self, direction):
-        """Take one azimuth step"""
-        if direction == 1:  # Clockwise
+        """Take one azimuth step, check limits"""
+        # Calculate new angle
+        new_angle = self.azimuth_angle + (1.0 * direction * 360 / self.AZIMUTH_STEPS_PER_REV)
+        
+        # Check limits
+        if new_angle < self.MAX_AZIMUTH_LEFT:
+            print(f"⚠ Azimuth limit reached: {new_angle:.1f}° < {self.MAX_AZIMUTH_LEFT}° (left limit)")
+            return False
+        if new_angle > self.MAX_AZIMUTH_RIGHT:
+            print(f"⚠ Azimuth limit reached: {new_angle:.1f}° > {self.MAX_AZIMUTH_RIGHT}° (right limit)")
+            return False
+        
+        # Update position
+        if direction == 1:  # Clockwise (right)
             self.azimuth_phase = (self.azimuth_phase + 1) % 8
             self.azimuth_position += 1
-        else:  # Counterclockwise
+        else:  # Counterclockwise (left)
             self.azimuth_phase = (self.azimuth_phase - 1) % 8
             self.azimuth_position -= 1
         
+        self.azimuth_angle = new_angle
         self.update_motors()
+        return True
     
     def step_altitude_fast(self, direction):
         """Take altitude steps (4× faster to match azimuth)"""
@@ -132,24 +153,23 @@ class CompleteTurret:
                 self.altitude_phase = (self.altitude_phase - 1) % 8
                 self.altitude_position -= 1
         
+        # Update altitude angle
+        self.altitude_angle = self.altitude_position * 360 / self.ALTITUDE_STEPS_PER_REV
         self.update_motors()
     
     def move_motors_sync(self, az_steps, alt_steps, delay=0.001):
         """
         Move both motors with synchronized speed
-        Altitude moves 4× faster to match azimuth
+        Returns True if successful, False if hit limits
         """
         if az_steps == 0 and alt_steps == 0:
-            return
+            return True
         
         az_dir = 1 if az_steps >= 0 else -1
         alt_dir = 1 if alt_steps >= 0 else -1
         
         az_steps_abs = abs(az_steps)
         alt_steps_abs = abs(alt_steps)
-        
-        print(f"Moving: Azimuth={az_steps} steps, Altitude={alt_steps} steps")
-        print(f"Altitude moving {self.ALTITUDE_SPEED_FACTOR}× faster")
         
         # Calculate timing
         if az_steps_abs > 0:
@@ -170,12 +190,16 @@ class CompleteTurret:
         last_az_time = time.time()
         last_alt_time = time.time()
         
+        success = True
+        
         while az_counter < az_steps_abs or alt_counter < alt_steps_abs:
             current_time = time.time()
             
             # Move azimuth if ready
             if az_counter < az_steps_abs and (current_time - last_az_time) >= az_delay:
-                self.step_azimuth(az_dir)
+                if not self.step_azimuth(az_dir):
+                    success = False
+                    break
                 last_az_time = current_time
                 az_counter += 1
             
@@ -188,142 +212,165 @@ class CompleteTurret:
             # Small sleep to prevent CPU hogging
             time.sleep(min(az_delay, alt_delay) / 10)
         
-        print(f"Completed: Az={az_counter}/{az_steps_abs}, Alt={alt_counter}/{alt_steps_abs}")
+        return success
     
     def move_motors_degrees_sync(self, az_degrees, alt_degrees, delay=0.001):
         """Move by degrees with synchronized timing"""
         az_steps = int(az_degrees * self.AZIMUTH_STEPS_PER_REV / 360)
         alt_steps = int(alt_degrees * self.ALTITUDE_STEPS_PER_REV / 360)
-        self.move_motors_sync(az_steps, alt_steps, delay)
+        return self.move_motors_sync(az_steps, alt_steps, delay)
     
-    # ========== JSON FETCHING ==========
+    # ========== HOME POSITION CALIBRATION ==========
     
-    def fetch_competition_data(self):
+    def calibrate_home(self):
         """
-        Fetch JSON from server - tries multiple IPs
-        Returns True if successful, False otherwise
+        Calibrate home position
+        User manually aligns laser to point to CENTER of ring
         """
         print("\n" + "="*60)
-        print("FETCHING COMPETITION COORDINATES")
+        print("HOME POSITION CALIBRATION")
         print("="*60)
+        print("IMPORTANT: Align turret so that:")
+        print("1. Laser points to CENTER of competition ring")
+        print("2. This is your 'forward' direction (0°)")
+        print("3. Flat sides parallel to motor protrusions")
+        print("\nPress Enter when aligned...")
+        input()
         
-        for ip in self.SERVER_IPS:
-            url = f"http://{ip}:8000/positions.json"
-            print(f"\nTrying: {url}")
-            
-            try:
-                response = requests.get(url, timeout=3)
-                if response.status_code == 200:
-                    data = response.json()
-                    if "turrets" in data and "globes" in data:
-                        self.competition_data = data
-                        
-                        # Find our position
-                        if self.team_number in data["turrets"]:
-                            self.my_position = data["turrets"][self.team_number]
-                            print(f"✓ SUCCESS! Connected to {ip}")
-                            print(f"  Team {self.team_number} position:")
-                            print(f"    r = {self.my_position['r']} cm")
-                            print(f"    θ = {self.my_position['theta']} rad")
-                            print(f"    ({math.degrees(self.my_position['theta']):.1f}°)")
-                            print(f"  Targets: {len(data['turrets'])-1} turrets + {len(data['globes'])} globes")
-                            return True
-                        else:
-                            print(f"✗ Team {self.team_number} not found in data")
-                    else:
-                        print(f"✗ Invalid data structure from {ip}")
+        # Reset all position tracking
+        self.azimuth_angle = 0.0
+        self.altitude_angle = 0.0
+        self.azimuth_position = 0
+        self.altitude_position = 0
+        self.azimuth_phase = 0
+        self.altitude_phase = 0
+        self.update_motors()
+        
+        print("✓ Home position calibrated!")
+        print(f"  Azimuth: 0°, Altitude: 0°")
+        print(f"  Limits: {self.MAX_AZIMUTH_LEFT}° (left) to {self.MAX_AZIMUTH_RIGHT}° (right)")
+    
+    def go_to_home(self):
+        """Return to home position"""
+        print("Returning to home position...")
+        az_steps_needed = -self.azimuth_position
+        alt_steps_needed = -self.altitude_position
+        
+        self.move_motors_sync(az_steps_needed, alt_steps_needed, 0.001)
+        self.azimuth_angle = 0.0
+        self.altitude_angle = 0.0
+        self.azimuth_position = 0
+        self.altitude_position = 0
+        self.azimuth_phase = 0
+        self.altitude_phase = 0
+        
+        print("✓ At home position (pointing to ring center)")
+    
+    # ========== JSON READING & TARGETING ==========
+    
+    def fetch_competition_data(self, team_number):
+        """Fetch JSON data and set team number"""
+        self.team_number = team_number
+        print(f"\nFetching competition data for Team {team_number}...")
+        print(f"Server: {self.SERVER_URL}")
+        
+        try:
+            response = requests.get(self.SERVER_URL, timeout=5)
+            if response.status_code == 200:
+                self.competition_data = response.json()
+                
+                # Find our position
+                if self.team_number in self.competition_data["turrets"]:
+                    self.my_position = self.competition_data["turrets"][self.team_number]
+                    print(f"✓ Success! Team {self.team_number} position:")
+                    print(f"  r = {self.my_position['r']} cm")
+                    print(f"  θ = {self.my_position['theta']} rad ({math.degrees(self.my_position['theta']):.1f}°)")
+                    
+                    # IMPORTANT: Since laser points to center at home (0°),
+                    # we need to adjust targeting calculations
+                    # Our forward direction (0°) points to ring center (r=0)
+                    # But our position is at (r=300, θ=some angle)
+                    # So when we aim "forward" (0°), we're actually aiming toward center
+                    
+                    return True
                 else:
-                    print(f"✗ HTTP {response.status_code} from {ip}")
-            except requests.exceptions.ConnectionError:
-                print(f"✗ Cannot connect to {ip}")
-            except requests.exceptions.Timeout:
-                print(f"✗ Timeout from {ip}")
-            except Exception as e:
-                print(f"✗ Error: {e}")
-        
-        print("\n" + "="*60)
-        print("ALL CONNECTION ATTEMPTS FAILED")
-        print("="*60)
-        print("Trying manual IP input...")
-        
-        # Manual IP input
-        manual_ip = input("Enter server IP address (e.g., 192.168.43.50): ").strip()
-        if manual_ip:
-            url = f"http://{manual_ip}:8000/positions.json"
-            print(f"Trying manual: {url}")
-            try:
-                response = requests.get(url, timeout=5)
-                if response.status_code == 200:
-                    self.competition_data = response.json()
-                    if self.team_number in self.competition_data["turrets"]:
-                        self.my_position = self.competition_data["turrets"][self.team_number]
-                        print(f"✓ Manual connection successful!")
-                        return True
-            except Exception as e:
-                print(f"✗ Manual connection failed: {e}")
-        
-        return False
-    
-    def print_all_positions(self):
-        """Print all competition positions"""
-        if not self.competition_data:
-            print("No competition data loaded. Fetch data first.")
-            return
-        
-        print("\n" + "="*60)
-        print("COMPETITION POSITIONS")
-        print("="*60)
-        
-        # Our position
-        if self.my_position:
-            print(f"\nOUR TEAM ({self.team_number}):")
-            print(f"  r = {self.my_position['r']} cm")
-            print(f"  θ = {self.my_position['theta']} rad")
-            print(f"     ({math.degrees(self.my_position['theta']):.1f}°)")
-        
-        # Other turrets
-        print("\nOTHER TURRETS:")
-        for team, pos in self.competition_data["turrets"].items():
-            if team != self.team_number:
-                deg = math.degrees(pos['theta'])
-                print(f"  Team {team}: r={pos['r']}cm, θ={pos['theta']}rad ({deg:.1f}°)")
-        
-        # Globes
-        print("\nGLOBES (Passive Targets):")
-        for i, globe in enumerate(self.competition_data["globes"]):
-            deg = math.degrees(globe['theta'])
-            print(f"  Globe {i+1}: r={globe['r']}cm, θ={globe['theta']}rad ({deg:.1f}°), z={globe['z']}cm")
-    
-    # ========== TARGETING CALCULATIONS ==========
+                    print(f"✗ Team {self.team_number} not found in data")
+                    available = list(self.competition_data["turrets"].keys())
+                    print(f"Available teams: {available}")
+                    return False
+            else:
+                print(f"✗ Server error: HTTP {response.status_code}")
+                return False
+                
+        except requests.exceptions.ConnectionError:
+            print(f"✗ Cannot connect to server at {self.SERVER_IP}")
+            print("Check: 1. Server running? 2. Correct IP? 3. Pi connected to same network?")
+            return False
+        except Exception as e:
+            print(f"✗ Error: {e}")
+            return False
     
     def calculate_target_angles(self, target_r, target_theta, target_z=0):
         """
         Calculate aiming angles for a target
+        IMPORTANT: Home position (0°) points to RING CENTER
         Returns: (azimuth_angle, altitude_angle) in degrees
         """
         if not self.my_position:
             print("Error: Our position not known")
             return (0, 0)
         
-        # Convert to Cartesian (x, y, z)
-        our_x = self.my_position['r'] * math.cos(self.my_position['theta'])
-        our_y = self.my_position['r'] * math.sin(self.my_position['theta'])
-        our_z = 0  # We're on ground
+        # Our position in polar coordinates
+        our_r = self.my_position['r']
+        our_theta = self.my_position['theta']
+        
+        # Since our laser points to CENTER at home (0°),
+        # we need to calculate the angle from our position to target
+        # relative to the direction to center
+        
+        # Convert everything to Cartesian for easier calculation
+        our_x = our_r * math.cos(our_theta)
+        our_y = our_r * math.sin(our_theta)
         
         target_x = target_r * math.cos(target_theta)
         target_y = target_r * math.sin(target_theta)
         target_z = target_z
         
-        # Calculate relative position
+        # Calculate vector from us to target
         dx = target_x - our_x
         dy = target_y - our_y
-        dz = target_z - our_z
+        dz = target_z  # We're at z=0
         
-        # Calculate azimuth (0° = forward, positive = CCW)
-        azimuth_rad = math.atan2(dy, dx)
-        azimuth_deg = math.degrees(azimuth_rad)
+        # Calculate vector from us to CENTER (0,0)
+        center_dx = -our_x  # From us to (0,0)
+        center_dy = -our_y
         
-        # Calculate altitude (0° = horizontal)
+        # Calculate angle between "to-center" vector and "to-target" vector
+        # This gives us azimuth relative to center-pointing direction
+        dot_product = center_dx * dx + center_dy * dy
+        cross_product = center_dx * dy - center_dy * dx
+        
+        distance_to_center = math.sqrt(center_dx**2 + center_dy**2)
+        distance_to_target = math.sqrt(dx**2 + dy**2)
+        
+        if distance_to_center > 0 and distance_to_target > 0:
+            # Cosine of angle between vectors
+            cos_angle = dot_product / (distance_to_center * distance_to_target)
+            # Clamp to avoid numerical errors
+            cos_angle = max(-1.0, min(1.0, cos_angle))
+            
+            # Get angle in radians
+            angle_rad = math.acos(cos_angle)
+            
+            # Determine sign using cross product (for left/right)
+            if cross_product < 0:
+                angle_rad = -angle_rad
+            
+            azimuth_deg = math.degrees(angle_rad)
+        else:
+            azimuth_deg = 0
+        
+        # Calculate altitude angle
         distance_2d = math.sqrt(dx*dx + dy*dy)
         if distance_2d > 0:
             altitude_rad = math.atan2(dz, distance_2d)
@@ -333,163 +380,185 @@ class CompleteTurret:
         
         return (azimuth_deg, altitude_deg)
     
-    def calculate_all_targets(self):
-        """Calculate aiming angles for ALL targets"""
+    def find_closest_target(self):
+        """Find closest target that hasn't been hit yet"""
         if not self.competition_data:
-            print("No data loaded. Fetch data first.")
-            return
+            print("No competition data loaded.")
+            return None
         
-        print("\n" + "="*60)
-        print("TARGETING CALCULATIONS")
-        print("="*60)
+        closest_target = None
+        min_angle = float('inf')
         
-        # Calculate for other turrets
-        print("\nOTHER TURRETS:")
+        # Check other turrets
         for team, pos in self.competition_data["turrets"].items():
             if team != self.team_number:
-                az, alt = self.calculate_target_angles(pos['r'], pos['theta'])
-                print(f"  Team {team}: Aim: Az={az:.1f}°, Alt={alt:.1f}°")
+                target_id = f"turret_{team}"
+                if target_id not in self.targets_hit:
+                    az, alt = self.calculate_target_angles(pos['r'], pos['theta'])
+                    angle_from_current = abs(az - self.azimuth_angle)
+                    
+                    # Check if within motor limits
+                    new_azimuth = self.azimuth_angle + (az - self.azimuth_angle)
+                    if (self.MAX_AZIMUTH_LEFT <= new_azimuth <= self.MAX_AZIMUTH_RIGHT):
+                        if angle_from_current < min_angle:
+                            min_angle = angle_from_current
+                            closest_target = {
+                                'type': 'turret',
+                                'id': team,
+                                'azimuth': az,
+                                'altitude': alt,
+                                'distance_angle': angle_from_current
+                            }
         
-        # Calculate for globes
-        print("\nGLOBES:")
+        # Check globes
         for i, globe in enumerate(self.competition_data["globes"]):
-            az, alt = self.calculate_target_angles(globe['r'], globe['theta'], globe['z'])
-            print(f"  Globe {i+1}: Aim: Az={az:.1f}°, Alt={alt:.1f}°")
+            target_id = f"globe_{i}"
+            if target_id not in self.targets_hit:
+                az, alt = self.calculate_target_angles(globe['r'], globe['theta'], globe['z'])
+                angle_from_current = abs(az - self.azimuth_angle)
+                
+                # Check if within motor limits
+                new_azimuth = self.azimuth_angle + (az - self.azimuth_angle)
+                if (self.MAX_AZIMUTH_LEFT <= new_azimuth <= self.MAX_AZIMUTH_RIGHT):
+                    if angle_from_current < min_angle:
+                        min_angle = angle_from_current
+                        closest_target = {
+                            'type': 'globe',
+                            'id': i,
+                            'azimuth': az,
+                            'altitude': alt,
+                            'distance_angle': angle_from_current
+                        }
+        
+        return closest_target
+    
+    def fire_at_closest_target(self):
+        """Find, aim at, and fire at closest target"""
+        print("\n" + "="*60)
+        print("FINDING CLOSEST TARGET")
+        print("="*60)
+        
+        target = self.find_closest_target()
+        if not target:
+            print("No valid targets found (all hit or out of range)")
+            return False
+        
+        print(f"Target found: {target['type'].upper()} {target['id']}")
+        print(f"Current position: Az={self.azimuth_angle:.1f}°, Alt={self.altitude_angle:.1f}°")
+        print(f"Target position: Az={target['azimuth']:.1f}°, Alt={target['altitude']:.1f}°")
+        print(f"Movement needed: ΔAz={target['azimuth']-self.azimuth_angle:.1f}°, ΔAlt={target['altitude']-self.altitude_angle:.1f}°")
+        
+        # Move to target
+        print(f"\nMoving to target...")
+        success = self.move_motors_degrees_sync(
+            target['azimuth'] - self.azimuth_angle,
+            target['altitude'] - self.altitude_angle,
+            0.001
+        )
+        
+        if not success:
+            print("⚠ Could not move to target (motor limits?)")
+            return False
+        
+        print(f"✓ Aimed at target")
+        print(f"Firing laser for 1 second...")
+        
+        # Fire laser
+        self.laser_on()
+        time.sleep(1.0)
+        self.laser_off()
+        
+        # Mark target as hit
+        if target['type'] == 'turret':
+            target_id = f"turret_{target['id']}"
+        else:
+            target_id = f"globe_{target['id']}"
+        
+        self.targets_hit.add(target_id)
+        print(f"✓ Target hit! Marked as eliminated.")
+        print(f"Targets hit so far: {len(self.targets_hit)}")
+        
+        return True
+    
+    # ========== MOTOR TEST ==========
+    
+    def motor_test_180(self):
+        """Test motors with 180° rotations"""
+        print("\n" + "="*60)
+        print("MOTOR TEST: 180° rotations")
+        print("="*60)
+        print("Starting from current position...")
+        print(f"Current: Az={self.azimuth_angle:.1f}°, Alt={self.altitude_angle:.1f}°")
+        
+        try:
+            while self.running:
+                # Check if we can move 180° to the right
+                if self.azimuth_angle + 180 <= self.MAX_AZIMUTH_RIGHT:
+                    print("\n1. 180° to the right")
+                    success = self.move_motors_degrees_sync(180, 0, 0.0005)
+                    if not success:
+                        print("⚠ Hit motor limit")
+                        break
+                    print("Pausing 2 seconds...")
+                    time.sleep(2)
+                else:
+                    print(f"⚠ Cannot move 180° right (would exceed {self.MAX_AZIMUTH_RIGHT}° limit)")
+                    break
+                
+                # Check if we can move 180° to the left (back to start)
+                if self.azimuth_angle - 180 >= self.MAX_AZIMUTH_LEFT:
+                    print("\n2. 180° to the left (back to start)")
+                    success = self.move_motors_degrees_sync(-180, 0, 0.0005)
+                    if not success:
+                        print("⚠ Hit motor limit")
+                        break
+                    print("Pausing 2 seconds...")
+                    time.sleep(2)
+                else:
+                    print(f"⚠ Cannot move 180° left (would exceed {self.MAX_AZIMUTH_LEFT}° limit)")
+                    break
+                
+        except KeyboardInterrupt:
+            print("\nTest stopped by user")
+        finally:
+            self.running = False
     
     # ========== LASER CONTROL ==========
     
     def laser_on(self):
-        """Turn laser ON (GPIO HIGH)"""
+        """Turn laser ON"""
         GPIO.output(self.LASER_PIN, GPIO.HIGH)
         self.laser_state = True
-        print("Laser: ON")
     
     def laser_off(self):
-        """Turn laser OFF (GPIO LOW)"""
+        """Turn laser OFF"""
         GPIO.output(self.LASER_PIN, GPIO.LOW)
         self.laser_state = False
-        print("Laser: OFF")
     
-    def fire_laser(self, duration=3.0):
-        """Fire laser for specified seconds"""
-        print(f"Firing laser for {duration} seconds...")
+    def fire_laser_test(self, duration=1.0):
+        """Test fire laser"""
+        print(f"\nFiring laser for {duration} second(s)...")
         self.laser_on()
         time.sleep(duration)
         self.laser_off()
+        print("Laser fired.")
     
-    # ========== AUTO-HOME ==========
+    # ========== UTILITY FUNCTIONS ==========
     
-    def auto_home(self):
-        """Set current position as home (horizontal)"""
+    def print_status(self):
+        """Print current status"""
         print("\n" + "="*60)
-        print("AUTO-HOME SETUP")
+        print("CURRENT STATUS")
         print("="*60)
-        print("Manually position turret:")
-        print("1. Laser pointing forward (0°)")
-        print("2. Flat sides parallel to motor protrusions")
-        print("3. Press Enter when aligned...")
-        input()
+        print(f"Team: {self.team_number if self.team_number else 'Not set'}")
+        print(f"Position: Azimuth={self.azimuth_angle:.1f}°, Altitude={self.altitude_angle:.1f}°")
+        print(f"Motor limits: {self.MAX_AZIMUTH_LEFT}° (left) to {self.MAX_AZIMUTH_RIGHT}° (right)")
+        print(f"Targets hit: {len(self.targets_hit)}")
         
-        self.azimuth_position = 0
-        self.altitude_position = 0
-        self.azimuth_phase = 0
-        self.altitude_phase = 0
-        self.update_motors()
-        
-        print("✓ Home position set to (0,0)")
-    
-    def go_to_home(self):
-        """Return to home position"""
-        print("Returning to home position...")
-        self.move_motors_sync(-self.azimuth_position, -self.altitude_position, 0.001)
-        self.azimuth_position = 0
-        self.altitude_position = 0
-        self.azimuth_phase = 0
-        self.altitude_phase = 0
-        print("✓ At home position")
-    
-    # ========== DEMO FUNCTIONS ==========
-    
-    def motor_demo(self):
-        """Demo: 180° rotations with matched speeds"""
-        print("\n" + "="*60)
-        print("MOTOR DEMO: 180° rotations")
-        print("="*60)
-        
-        cycle = 0
-        try:
-            while self.running:
-                cycle += 1
-                print(f"\n--- Cycle {cycle} ---")
-                
-                print("180° Clockwise/Up")
-                self.move_motors_degrees_sync(180, 180, 0.0005)
-                time.sleep(2)
-                
-                print("180° Counterclockwise/Down")
-                self.move_motors_degrees_sync(-180, -180, 0.0005)
-                time.sleep(2)
-                
-        except KeyboardInterrupt:
-            self.running = False
-            print("\nDemo stopped")
-    
-    def laser_demo(self):
-        """Demo: Laser 2s ON/OFF"""
-        print("\n" + "="*60)
-        print("LASER DEMO: 2 seconds ON/OFF")
-        print("="*60)
-        
-        cycle = 0
-        try:
-            while self.running:
-                cycle += 1
-                print(f"\nCycle {cycle}")
-                
-                self.laser_on()
-                time.sleep(2)
-                self.laser_off()
-                time.sleep(2)
-                
-        except KeyboardInterrupt:
-            self.running = False
-    
-    def test_targeting(self):
-        """Test targeting on first available target"""
-        if not self.competition_data:
-            print("No data loaded. Fetch data first.")
-            return
-        
-        # Find first other turret
-        other_teams = [t for t in self.competition_data["turrets"].keys() if t != self.team_number]
-        if other_teams:
-            target_team = other_teams[0]
-            target = self.competition_data["turrets"][target_team]
-            az, alt = self.calculate_target_angles(target['r'], target['theta'])
-            
-            print(f"\nTargeting Team {target_team}:")
-            print(f"  Position: r={target['r']}cm, θ={target['theta']}rad")
-            print(f"  Aim angles: Azimuth={az:.1f}°, Altitude={alt:.1f}°")
-            
-            response = input("Move turret to aim? (y/n): ").strip().lower()
-            if response == 'y':
-                print(f"Moving to: Az={az:.1f}°, Alt={alt:.1f}°")
-                self.move_motors_degrees_sync(az, alt, 0.001)
-                
-                response = input("Fire laser? (y/n): ").strip().lower()
-                if response == 'y':
-                    self.fire_laser(3)
-        
-        # Also test a globe
-        if self.competition_data["globes"]:
-            globe = self.competition_data["globes"][0]
-            az, alt = self.calculate_target_angles(globe['r'], globe['theta'], globe['z'])
-            
-            print(f"\nTargeting Globe 1:")
-            print(f"  Position: r={globe['r']}cm, θ={globe['theta']}rad, z={globe['z']}cm")
-            print(f"  Aim angles: Azimuth={az:.1f}°, Altitude={alt:.1f}°")
-    
-    # ========== CLEANUP ==========
+        if self.competition_data:
+            total_targets = (len(self.competition_data['turrets']) - 1 + 
+                           len(self.competition_data['globes']))
+            print(f"Remaining targets: {total_targets - len(self.targets_hit)}")
     
     def cleanup(self):
         """Clean shutdown"""
@@ -499,72 +568,65 @@ class CompleteTurret:
         self.shift_out(0b00000000)  # Turn off motors
         self.laser_off()
         GPIO.cleanup()
-        print("Cleanup complete")
+        print("Cleanup complete. All motors off, laser OFF.")
 
 def main():
     """Main program"""
     print("="*70)
-    print("ENME441 LASER TURRET - COMPLETE SYSTEM")
+    print("ENME441 LASER TURRET - COMPETITION SYSTEM")
     print("="*70)
-    print("Features:")
-    print("  1. Motor control with speed matching")
-    print("  2. JSON coordinate fetching")
-    print("  3. Targeting calculations")
-    print("  4. Laser control")
-    print("  5. Auto-home positioning")
+    print("Starting orientation: Laser points to RING CENTER at home position")
+    print(f"Motor limits: ±120° from home")
     print("="*70)
-    
-    # Get team number
-    team = input("Enter your team number (default: 1): ").strip()
-    if not team:
-        team = "1"
     
     turret = None
     try:
-        turret = CompleteTurret(team_number=team)
+        turret = CompetitionTurret()
         
         while True:
             print("\n" + "="*70)
-            print(f"TEAM {team} - MAIN MENU")
-            print(f"Position: Azi={turret.azimuth_position} steps, Alt={turret.altitude_position} steps")
+            print("MAIN MENU")
             print("="*70)
-            print("1. Fetch competition coordinates")
-            print("2. Print all positions")
-            print("3. Calculate all target angles")
-            print("4. Test targeting (aim at first target)")
-            print("5. Motor demo (180° rotations)")
-            print("6. Laser demo (2s ON/OFF)")
-            print("7. Test fire laser (3 seconds)")
-            print("8. Auto-home setup")
-            print("9. Return to home")
-            print("10. Exit")
+            print("1. Calibrate Home Position (Laser points to CENTER)")
+            print("2. Set Team Number & Fetch Competition Data")
+            print("3. Motor Test (180° rotations)")
+            print("4. Find & Fire at Closest Target")
+            print("5. Test Fire Laser (1 second)")
+            print("6. Return to Home Position")
+            print("7. Show Current Status")
+            print("8. Exit")
             
-            choice = input("\nEnter choice (1-10): ").strip()
+            choice = input("\nEnter choice (1-8): ").strip()
             
             if choice == "1":
-                if turret.fetch_competition_data():
-                    print("\n✓ Ready for competition!")
-                else:
-                    print("\n✗ Failed to fetch data")
+                turret.calibrate_home()
             elif choice == "2":
-                turret.print_all_positions()
+                if turret.team_number:
+                    print(f"Current team: {turret.team_number}")
+                    change = input("Change team? (y/n): ").strip().lower()
+                    if change != 'y':
+                        continue
+                
+                team = input("Enter your team number: ").strip()
+                if team:
+                    if turret.fetch_competition_data(team):
+                        print("\n✓ Competition data loaded successfully!")
+                        turret.print_status()
             elif choice == "3":
-                turret.calculate_all_targets()
+                turret.running = True
+                turret.motor_test_180()
             elif choice == "4":
-                turret.test_targeting()
+                if not turret.team_number or not turret.competition_data:
+                    print("Please set team number and fetch competition data first (Option 2)")
+                else:
+                    turret.fire_at_closest_target()
             elif choice == "5":
-                turret.running = True
-                turret.motor_demo()
+                turret.fire_laser_test(1.0)
             elif choice == "6":
-                turret.running = True
-                turret.laser_demo()
-            elif choice == "7":
-                turret.fire_laser(3)
-            elif choice == "8":
-                turret.auto_home()
-            elif choice == "9":
                 turret.go_to_home()
-            elif choice == "10":
+            elif choice == "7":
+                turret.print_status()
+            elif choice == "8":
                 print("Exiting...")
                 break
             else:
