@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-ENME441 Laser Turret - COMPETITION READY
-Fixed: No altitude limits, proper azimuth orientation
+ENME441 Laser Turret - FINAL COMPETITION VERSION
+Ready for ENME441 WiFi router with 3-second firing duration
 """
 
 import RPi.GPIO as GPIO
@@ -14,9 +14,14 @@ import atexit
 
 class CompetitionTurret:
     def __init__(self):
-        # ========== CONFIGURATION ==========
-        self.SERVER_IP = "172.20.10.8"  # CHANGE THIS to your laptop's IP
+        # ========== COMPETITION CONFIGURATION ==========
+        # IMPORTANT: For competition, use the ENME441 WiFi router
+        # The server URL will be: http://192.168.1.254:8000/positions.json
+        self.SERVER_IP = "192.168.1.254"  # ENME441 WiFi router IP
         self.SERVER_URL = f"http://{self.SERVER_IP}:8000/positions.json"
+        
+        # Competition laser firing duration: 3 seconds (per rules)
+        self.FIRING_DURATION = 3.0
         
         # Team number (will be asked later)
         self.team_number = None
@@ -107,6 +112,7 @@ class CompetitionTurret:
         GPIO.output(self.DATA_PIN, GPIO.LOW)
         
         self.gpio_initialized = True
+        print("✓ GPIO initialized - Laser OFF")
     
     def ensure_gpio(self):
         """Ensure GPIO is initialized before using it"""
@@ -248,7 +254,7 @@ class CompetitionTurret:
         print("\nOptions:")
         print("1. Turn laser ON")
         print("2. Turn laser OFF")
-        print("3. Test fire (1 second)")
+        print("3. Test fire (3 seconds - competition duration)")
         print("4. Back to main menu")
         
         choice = input("\nEnter choice (1-4): ").strip()
@@ -260,9 +266,9 @@ class CompetitionTurret:
             self.laser_off()
             print("Laser turned OFF")
         elif choice == "3":
-            print("Firing laser for 1 second...")
+            print(f"Firing laser for {self.FIRING_DURATION} seconds (competition duration)...")
             self.laser_on()
-            time.sleep(1.0)
+            time.sleep(self.FIRING_DURATION)
             self.laser_off()
             print("Laser fired.")
     
@@ -347,9 +353,9 @@ class CompetitionTurret:
         print(f"Azimuth range: {self.MAX_AZIMUTH_LEFT}° (left) to {self.MAX_AZIMUTH_RIGHT}° (right) from center")
     
     def json_file_reading(self):
-        """Read JSON file and set team number"""
+        """Read JSON file and set team number - COMPETITION VERSION"""
         print("\n" + "="*60)
-        print("JSON FILE READING")
+        print("JSON FILE READING - COMPETITION MODE")
         print("="*60)
         
         if self.team_number:
@@ -365,39 +371,47 @@ class CompetitionTurret:
         
         self.team_number = team
         print(f"\nFetching competition data for Team {team}...")
-        print(f"Server: {self.SERVER_URL}")
+        print(f"Server URL: {self.SERVER_URL}")
+        print("Note: This should connect to ENME441 WiFi router at 192.168.1.254")
         
         try:
-            response = requests.get(self.SERVER_URL, timeout=5)
+            response = requests.get(self.SERVER_URL, timeout=10)
             if response.status_code == 200:
                 self.competition_data = response.json()
                 
                 if self.team_number in self.competition_data["turrets"]:
                     self.my_position = self.competition_data["turrets"][self.team_number]
-                    print(f"✓ Success! Team {self.team_number} position:")
+                    print(f"✓ SUCCESS! Connected to competition server.")
+                    print(f"✓ Team {self.team_number} position:")
                     print(f"  r = {self.my_position['r']} cm")
                     print(f"  θ = {self.my_position['theta']} rad ({math.degrees(self.my_position['theta']):.1f}°)")
                     
                     # Count targets
                     turret_count = len(self.competition_data["turrets"]) - 1
                     globe_count = len(self.competition_data["globes"])
-                    print(f"\nTargets found:")
+                    print(f"\nCompetition targets:")
                     print(f"  • Other turrets: {turret_count}")
                     print(f"  • Globes: {globe_count}")
                     print(f"  • Total targets: {turret_count + globe_count}")
                     
                 else:
-                    print(f"✗ Team {self.team_number} not found in data")
+                    print(f"✗ Team {self.team_number} not found in competition data")
                     available = list(self.competition_data["turrets"].keys())
                     print(f"Available teams: {available}")
                     self.competition_data = None
                     self.my_position = None
             else:
                 print(f"✗ Server error: HTTP {response.status_code}")
+                print("Check: 1. Connected to ENME441 WiFi? 2. Server running?")
                 
         except requests.exceptions.ConnectionError:
-            print(f"✗ Cannot connect to server at {self.SERVER_IP}")
-            print("Check: 1. Server running? 2. Correct IP? 3. Pi connected to same network?")
+            print(f"✗ CANNOT CONNECT TO SERVER at {self.SERVER_IP}")
+            print("\nTROUBLESHOOTING:")
+            print("1. Make sure Pi is connected to 'ENME441' WiFi network")
+            print("2. Check WiFi password if required")
+            print("3. Verify server is running at 192.168.1.254:8000")
+            print("4. Try: ping 192.168.1.254")
+            print("5. If using a different network, update SERVER_IP in code")
         except Exception as e:
             print(f"✗ Error: {e}")
     
@@ -543,10 +557,11 @@ class CompetitionTurret:
         return valid_targets[0]
     
     def initiate_firing_sequence(self):
-        """Fire at ALL targets in sequence"""
+        """Fire at ALL targets in sequence - COMPETITION VERSION (3 seconds firing)"""
         print("\n" + "="*60)
-        print("INITIATING FIRING SEQUENCE")
+        print("INITIATING FIRING SEQUENCE - COMPETITION MODE")
         print("="*60)
+        print(f"Laser will fire for {self.FIRING_DURATION} seconds per target (competition rule)")
         
         if not self.team_number or not self.competition_data:
             print("Please set team number and fetch competition data first (Option 4)")
@@ -609,14 +624,14 @@ class CompetitionTurret:
                     continue
                 
                 print("✓ Aimed at target")
-                print("Firing laser for 1 second...")
+                print(f"Firing laser for {self.FIRING_DURATION} seconds (competition duration)...")
                 
-                # Fire laser
+                # Fire laser for 3 seconds (competition rule)
                 self.laser_on()
-                time.sleep(1.0)  # Fire for 1 second
+                time.sleep(self.FIRING_DURATION)
                 self.laser_off()
                 
-                print("Laser fired. Waiting 1 second before moving...")
+                print(f"Laser fired for {self.FIRING_DURATION}s. Waiting 1 second before moving...")
                 time.sleep(1.0)  # WAIT 1 SECOND BEFORE MOVING
                 
                 # Mark target as hit
@@ -654,12 +669,14 @@ class CompetitionTurret:
         self.ensure_gpio()
         GPIO.output(self.LASER_PIN, GPIO.HIGH)
         self.laser_state = True
+        print("LASER: ON")
     
     def laser_off(self):
         """Turn laser OFF"""
         self.ensure_gpio()
         GPIO.output(self.LASER_PIN, GPIO.LOW)
         self.laser_state = False
+        print("LASER: OFF")
     
     def go_to_home(self):
         """Return to home position"""
@@ -724,7 +741,13 @@ class CompetitionTurret:
 def main():
     """Main program"""
     print("="*70)
-    print("ENME441 LASER TURRET CONTROL SYSTEM")
+    print("ENME441 LASER TURRET - COMPETITION READY")
+    print("="*70)
+    print("Configuration:")
+    print(f"  • Server IP: 192.168.1.254 (ENME441 WiFi router)")
+    print(f"  • Firing duration: 3.0 seconds per target")
+    print(f"  • Azimuth range: ±120° from center")
+    print(f"  • Altitude: No limits")
     print("="*70)
     
     turret = None
@@ -738,8 +761,8 @@ def main():
             print("1. Manual toggle the laser")
             print("2. Manual adjust motors")
             print("3. Motor calibration")
-            print("4. JSON file reading")
-            print("5. Initiate firing sequence")
+            print("4. JSON file reading (COMPETITION)")
+            print("5. Initiate firing sequence (3s firing)")
             print("6. Force cleanup & exit")
             print("7. Exit (Auto-return to home)")
             
