@@ -1,16 +1,9 @@
 #!/usr/bin/env python3
 """
 ENME441 Laser Turret - COMPETITION READY
-Features:
-1. Single IP configuration
-2. Home position calibration
-3. JSON reading with team selection
-4. Motor limits (±120° azimuth)
-5. Targeting closest target with laser firing
-6. Starting orientation: laser points to ring center
-7. Auto-return to home on exit
-8. Motor test limited to ±90°
-9. Enhanced target display with details
+FIXED VERSION: 
+1. Fixed atexit GPIO error
+2. Added target attribute display
 """
 
 import RPi.GPIO as GPIO
@@ -70,9 +63,6 @@ class CompetitionTurret:
         self.DATA_PIN = 9    # GPIO9  -> DS
         self.LASER_PIN = 26  # GPIO26 (HIGH = ON, LOW = OFF)
         
-        # Track if GPIO is initialized
-        self.gpio_initialized = False
-        
         # Stepper sequences (half-step)
         self.AZIMUTH_SEQ = [
             0b00000001, 0b00000011, 0b00000010, 0b00000110,
@@ -87,44 +77,47 @@ class CompetitionTurret:
         # State
         self.laser_state = False
         self.running = True
+        self.gpio_initialized = False
         
         self.setup_gpio()
         
         # Register auto-return function to run on exit
-        atexit.register(self.safe_auto_return)
+        atexit.register(self.auto_return_to_home)
     
     def setup_gpio(self):
         """Initialize all GPIO pins"""
-        try:
-            GPIO.setmode(GPIO.BCM)
+        if self.gpio_initialized:
+            return
             
-            # Shift register pins
-            GPIO.setup(self.SHIFT_CLK, GPIO.OUT)
-            GPIO.setup(self.LATCH_CLK, GPIO.OUT)
-            GPIO.setup(self.DATA_PIN, GPIO.OUT)
-            
-            # Laser pin
-            GPIO.setup(self.LASER_PIN, GPIO.OUT)
-            GPIO.output(self.LASER_PIN, GPIO.LOW)  # Start with laser OFF
-            
-            # Initialize
-            GPIO.output(self.SHIFT_CLK, GPIO.LOW)
-            GPIO.output(self.LATCH_CLK, GPIO.LOW)
-            GPIO.output(self.DATA_PIN, GPIO.LOW)
-            
-            self.gpio_initialized = True
-            print("GPIO setup complete - Laser starts OFF (safe)")
-        except Exception as e:
-            print(f"GPIO setup warning: {e}")
-            self.gpio_initialized = False
+        GPIO.setmode(GPIO.BCM)
+        
+        # Shift register pins
+        GPIO.setup(self.SHIFT_CLK, GPIO.OUT)
+        GPIO.setup(self.LATCH_CLK, GPIO.OUT)
+        GPIO.setup(self.DATA_PIN, GPIO.OUT)
+        
+        # Laser pin
+        GPIO.setup(self.LASER_PIN, GPIO.OUT)
+        GPIO.output(self.LASER_PIN, GPIO.LOW)  # Start with laser OFF
+        
+        # Initialize
+        GPIO.output(self.SHIFT_CLK, GPIO.LOW)
+        GPIO.output(self.LATCH_CLK, GPIO.LOW)
+        GPIO.output(self.DATA_PIN, GPIO.LOW)
+        
+        self.gpio_initialized = True
+        print("GPIO setup complete - Laser starts OFF (safe)")
+    
+    def ensure_gpio(self):
+        """Ensure GPIO is initialized before using it"""
+        if not self.gpio_initialized:
+            self.setup_gpio()
     
     # ========== MOTOR CONTROL ==========
     
     def shift_out(self, data_byte):
         """Send 8 bits to shift register"""
-        if not self.gpio_initialized:
-            return
-            
+        self.ensure_gpio()
         GPIO.output(self.LATCH_CLK, GPIO.LOW)
         for i in range(7, -1, -1):
             bit = (data_byte >> i) & 0x01
@@ -138,6 +131,7 @@ class CompetitionTurret:
     
     def update_motors(self):
         """Update both motors with current phases"""
+        self.ensure_gpio()
         combined = (self.AZIMUTH_SEQ[self.azimuth_phase] | 
                    self.ALTITUDE_SEQ[self.altitude_phase])
         self.shift_out(combined)
@@ -304,38 +298,26 @@ class CompetitionTurret:
         else:
             print("⚠ Could not return to home (motor limits?)")
     
-    def safe_auto_return(self):
-        """
-        Safely auto-return to home position (called on exit)
-        Handles GPIO cleanup properly
-        """
+    def auto_return_to_home(self):
+        """Automatically return to home position (called on exit)"""
         print("\nAuto-returning to home position...")
         
-        # Check if GPIO is still initialized
-        if not self.gpio_initialized:
-            print("⚠ GPIO not initialized, cannot auto-return")
-            return
+        # Calculate steps needed to return to home
+        az_steps_needed = self.home_azimuth_position - self.azimuth_position
+        alt_steps_needed = self.home_altitude_position - self.altitude_position
         
-        try:
-            # Re-setup GPIO if needed
-            GPIO.setmode(GPIO.BCM)
-            GPIO.setup(self.SHIFT_CLK, GPIO.OUT)
-            GPIO.setup(self.LATCH_CLK, GPIO.OUT)
-            GPIO.setup(self.DATA_PIN, GPIO.OUT)
-            GPIO.setup(self.LASER_PIN, GPIO.OUT)
+        # Only move if we're not already at home
+        if az_steps_needed != 0 or alt_steps_needed != 0:
+            print(f"Moving: Az={az_steps_needed} steps, Alt={alt_steps_needed} steps")
             
-            # Calculate steps needed to return to home
-            az_steps_needed = self.home_azimuth_position - self.azimuth_position
-            alt_steps_needed = self.home_altitude_position - self.altitude_position
-            
-            # Only move if we're not already at home
-            if az_steps_needed != 0 or alt_steps_needed != 0:
-                print(f"Moving: Az={az_steps_needed} steps, Alt={alt_steps_needed} steps")
+            try:
+                # Ensure GPIO is initialized before moving
+                if not self.gpio_initialized:
+                    print("Re-initializing GPIO for auto-return...")
+                    self.setup_gpio()
                 
                 # Move back slowly for safety
-                success = self.move_motors_sync(az_steps_needed, alt_steps_needed, 0.002)
-                
-                if success:
+                if self.move_motors_sync(az_steps_needed, alt_steps_needed, 0.002):
                     # Update position to home
                     self.azimuth_angle = self.home_azimuth_angle
                     self.altitude_angle = self.home_altitude_angle
@@ -343,31 +325,21 @@ class CompetitionTurret:
                     self.altitude_position = self.home_altitude_position
                     self.azimuth_phase = self.home_azimuth_phase
                     self.altitude_phase = self.home_altitude_phase
-                    
                     print("✓ Returned to home position")
                 else:
-                    print("⚠ Could not fully return to home (motor limits?)")
-            else:
-                print("✓ Already at home position")
-            
-        except Exception as e:
-            print(f"⚠ Error during auto-return: {e}")
-        finally:
-            # Always try to turn off motors and laser
-            try:
-                self.shift_out(0b00000000)
-                GPIO.output(self.LASER_PIN, GPIO.LOW)
-                print("✓ Motors and laser turned off")
-            except:
-                print("⚠ Could not turn off motors/laser")
-            
-            # Cleanup GPIO
-            try:
-                GPIO.cleanup()
-                self.gpio_initialized = False
-                print("✓ GPIO cleaned up")
-            except:
-                print("⚠ Could not cleanup GPIO")
+                    print("⚠ Could not complete auto-return (motor limits?)")
+                    
+            except Exception as e:
+                print(f"⚠ Error during auto-return: {e}")
+        else:
+            print("✓ Already at home position")
+        
+        # Turn off motors and laser
+        try:
+            self.shift_out(0b00000000)
+            self.laser_off()
+        except:
+            pass
     
     # ========== JSON READING & TARGETING ==========
     
@@ -389,9 +361,6 @@ class CompetitionTurret:
                     print(f"  r = {self.my_position['r']} cm")
                     print(f"  θ = {self.my_position['theta']} rad ({math.degrees(self.my_position['theta']):.1f}°)")
                     
-                    # Show all targets with details
-                    self.display_all_targets_with_details()
-                    
                     return True
                 else:
                     print(f"✗ Team {self.team_number} not found in data")
@@ -409,71 +378,6 @@ class CompetitionTurret:
         except Exception as e:
             print(f"✗ Error: {e}")
             return False
-    
-    def display_all_targets_with_details(self):
-        """Display all targets with detailed information"""
-        if not self.competition_data:
-            print("No competition data loaded.")
-            return
-        
-        print("\n" + "="*60)
-        print("ALL COMPETITION TARGETS - DETAILED VIEW")
-        print("="*60)
-        
-        # Our position
-        print(f"\nOUR TEAM ({self.team_number}):")
-        print(f"  Position: r={self.my_position['r']} cm, θ={self.my_position['theta']} rad")
-        print(f"            ({math.degrees(self.my_position['theta']):.1f}° from reference)")
-        
-        # Other turrets
-        print("\nOTHER TURRETS (Active Targets):")
-        for team, pos in self.competition_data["turrets"].items():
-            if team != self.team_number:
-                # Calculate targeting info
-                az, alt = self.calculate_target_angles(pos['r'], pos['theta'])
-                distance = pos['r']  # All at same radius
-                
-                status = "💀 HIT" if f"turret_{team}" in self.targets_hit else "🎯 ACTIVE"
-                
-                print(f"\n  Team {team}:")
-                print(f"    Status: {status}")
-                print(f"    Position: r={pos['r']} cm, θ={pos['theta']} rad")
-                print(f"              ({math.degrees(pos['theta']):.1f}° from reference)")
-                print(f"    Distance from us: {distance:.1f} cm")
-                print(f"    Required aim: Azimuth={az:.1f}°, Altitude={alt:.1f}°")
-                print(f"    Within limits: {'✓ YES' if self.MAX_AZIMUTH_LEFT <= az <= self.MAX_AZIMUTH_RIGHT else '✗ NO'}")
-        
-        # Globes
-        print("\nGLOBES (Passive Targets):")
-        for i, globe in enumerate(self.competition_data["globes"]):
-            # Calculate targeting info
-            az, alt = self.calculate_target_angles(globe['r'], globe['theta'], globe['z'])
-            distance = globe['r']  # Same radius
-            
-            status = "💀 HIT" if f"globe_{i}" in self.targets_hit else "🎯 ACTIVE"
-            
-            print(f"\n  Globe {i+1}:")
-            print(f"    Status: {status}")
-            print(f"    Position: r={globe['r']} cm, θ={globe['theta']} rad")
-            print(f"              ({math.degrees(globe['theta']):.1f}° from reference)")
-            print(f"    Height: z={globe['z']} cm above ground")
-            print(f"    Distance from us: {distance:.1f} cm")
-            print(f"    Required aim: Azimuth={az:.1f}°, Altitude={alt:.1f}°")
-            print(f"    Within limits: {'✓ YES' if self.MAX_AZIMUTH_LEFT <= az <= self.MAX_AZIMUTH_RIGHT else '✗ NO'}")
-        
-        # Summary
-        total_turrets = len(self.competition_data['turrets']) - 1
-        total_globes = len(self.competition_data['globes'])
-        turrets_hit = sum(1 for t in self.competition_data['turrets'].keys() 
-                         if t != self.team_number and f"turret_{t}" in self.targets_hit)
-        globes_hit = sum(1 for i in range(total_globes) if f"globe_{i}" in self.targets_hit)
-        
-        print("\n" + "="*60)
-        print("SUMMARY:")
-        print(f"  Active Turrets: {turrets_hit}/{total_turrets} hit")
-        print(f"  Passive Globes: {globes_hit}/{total_globes} hit")
-        print(f"  Total Targets: {turrets_hit + globes_hit}/{total_turrets + total_globes} hit")
-        print("="*60)
     
     def calculate_target_angles(self, target_r, target_theta, target_z=0):
         """
@@ -570,10 +474,12 @@ class CompetitionTurret:
                             closest_target = {
                                 'type': 'turret',
                                 'id': team,
+                                'r': pos['r'],
+                                'theta': pos['theta'],
+                                'z': 0,  # Turrets are at ground level
                                 'azimuth': az,
                                 'altitude': alt,
-                                'distance_angle': angle_from_current,
-                                'details': pos
+                                'distance_angle': angle_from_current
                             }
         
         # Check globes
@@ -591,16 +497,18 @@ class CompetitionTurret:
                         closest_target = {
                             'type': 'globe',
                             'id': i,
+                            'r': globe['r'],
+                            'theta': globe['theta'],
+                            'z': globe['z'],
                             'azimuth': az,
                             'altitude': alt,
-                            'distance_angle': angle_from_current,
-                            'details': globe
+                            'distance_angle': angle_from_current
                         }
         
         return closest_target
     
     def fire_at_closest_target(self):
-        """Find, aim at, and fire at closest target"""
+        """Find, aim at, and fire at closest target with detailed target info"""
         print("\n" + "="*60)
         print("FINDING CLOSEST TARGET")
         print("="*60)
@@ -610,26 +518,25 @@ class CompetitionTurret:
             print("No valid targets found (all hit or out of range)")
             return False
         
-        # Display target details
-        print(f"\n🎯 TARGET SELECTED:")
-        if target['type'] == 'turret':
-            print(f"  Type: Enemy Turret (Team {target['id']})")
-            print(f"  Position: r={target['details']['r']} cm, θ={target['details']['theta']} rad")
-            print(f"             ({math.degrees(target['details']['theta']):.1f}° from reference)")
-        else:
-            print(f"  Type: Passive Globe #{target['id']+1}")
-            print(f"  Position: r={target['details']['r']} cm, θ={target['details']['theta']} rad")
-            print(f"             ({math.degrees(target['details']['theta']):.1f}° from reference)")
-            print(f"  Height: z={target['details']['z']} cm above ground")
+        print(f"Target found: {target['type'].upper()} {target['id']}")
+        print(f"Target attributes:")
+        print(f"  • Type: {target['type']}")
+        print(f"  • ID: {target['id']}")
+        print(f"  • Position (polar): r={target['r']:.1f} cm, θ={target['theta']:.3f} rad ({math.degrees(target['theta']):.1f}°)")
+        if target['type'] == 'globe':
+            print(f"  • Height: z={target['z']:.1f} cm")
+        print(f"  • Calculated aiming angles: Az={target['azimuth']:.1f}°, Alt={target['altitude']:.1f}°")
+        print(f"Current position: Az={self.azimuth_angle:.1f}°, Alt={self.altitude_angle:.1f}°")
+        print(f"Movement needed: ΔAz={target['azimuth']-self.azimuth_angle:.1f}°, ΔAlt={target['altitude']-self.altitude_angle:.1f}°")
         
-        print(f"\n📡 TARGETING INFORMATION:")
-        print(f"  Current position: Az={self.azimuth_angle:.1f}°, Alt={self.altitude_angle:.1f}°")
-        print(f"  Target position: Az={target['azimuth']:.1f}°, Alt={target['altitude']:.1f}°")
-        print(f"  Movement needed: ΔAz={target['azimuth']-self.azimuth_angle:.1f}°, ΔAlt={target['altitude']-self.altitude_angle:.1f}°")
-        print(f"  Angular distance: {target['distance_angle']:.1f}°")
+        # Ask for confirmation before moving
+        confirm = input("\nFire at this target? (y/n): ").strip().lower()
+        if confirm != 'y':
+            print("Targeting cancelled.")
+            return False
         
         # Move to target
-        print(f"\n🎮 MOVING TO TARGET...")
+        print(f"\nMoving to target...")
         success = self.move_motors_degrees_sync(
             target['azimuth'] - self.azimuth_angle,
             target['altitude'] - self.altitude_angle,
@@ -641,7 +548,7 @@ class CompetitionTurret:
             return False
         
         print(f"✓ Aimed at target")
-        print(f"\n🔫 FIRING LASER FOR 1 SECOND...")
+        print(f"Firing laser for 1 second...")
         
         # Fire laser
         self.laser_on()
@@ -651,21 +558,19 @@ class CompetitionTurret:
         # Mark target as hit
         if target['type'] == 'turret':
             target_id = f"turret_{target['id']}"
-            target_name = f"Team {target['id']}"
         else:
             target_id = f"globe_{target['id']}"
-            target_name = f"Globe {target['id']+1}"
         
         self.targets_hit.add(target_id)
-        print(f"\n✅ TARGET HIT! {target_name} eliminated.")
-        print(f"🎯 Targets hit so far: {len(self.targets_hit)}")
+        print(f"✓ Target hit! Marked as eliminated.")
+        print(f"Targets hit so far: {len(self.targets_hit)}")
         
         return True
     
     # ========== MOTOR TEST (90° VERSION) ==========
     
     def motor_test_90(self):
-        """Test motors with 90° rotations (changed from 180°)"""
+        """Test motors with 90° rotations"""
         print("\n" + "="*60)
         print("MOTOR TEST: 90° rotations")
         print("="*60)
@@ -724,15 +629,15 @@ class CompetitionTurret:
     
     def laser_on(self):
         """Turn laser ON"""
-        if self.gpio_initialized:
-            GPIO.output(self.LASER_PIN, GPIO.HIGH)
-            self.laser_state = True
+        self.ensure_gpio()
+        GPIO.output(self.LASER_PIN, GPIO.HIGH)
+        self.laser_state = True
     
     def laser_off(self):
         """Turn laser OFF"""
-        if self.gpio_initialized:
-            GPIO.output(self.LASER_PIN, GPIO.LOW)
-            self.laser_state = False
+        self.ensure_gpio()
+        GPIO.output(self.LASER_PIN, GPIO.LOW)
+        self.laser_state = False
     
     def fire_laser_test(self, duration=1.0):
         """Test fire laser"""
@@ -764,13 +669,15 @@ class CompetitionTurret:
         """Clean shutdown - will auto-return to home via atexit"""
         self.running = False
         print("\nInitiating cleanup...")
-        # Note: safe_auto_return() will be called automatically by atexit
     
     def force_cleanup(self):
         """Force cleanup without atexit (for manual calls)"""
         print("\nForce cleanup initiated...")
-        self.safe_auto_return()
-        print("Cleanup complete.")
+        self.auto_return_to_home()
+        if self.gpio_initialized:
+            GPIO.cleanup()
+            self.gpio_initialized = False
+        print("GPIO cleanup complete.")
 
 def main():
     """Main program"""
@@ -780,9 +687,9 @@ def main():
     print("Features:")
     print("  • Laser points to RING CENTER at home position")
     print("  • Motor limits: ±120° from home")
-    print("  • Auto-return to home on exit")
+    print("  • Auto-return to home on exit (FIXED)")
     print("  • Motor test: ±90° rotations")
-    print("  • Enhanced target display with details")
+    print("  • Detailed target attribute display")
     print("="*70)
     
     turret = None
@@ -795,3 +702,83 @@ def main():
             print("="*70)
             print("1. Calibrate Home Position (Laser points to CENTER)")
             print("2. Set Team Number & Fetch Competition Data")
+            print("3. Motor Test (90° rotations)")
+            print("4. Find & Fire at Closest Target (with target details)")
+            print("5. Test Fire Laser (1 second)")
+            print("6. Return to Home Position")
+            print("7. Show Current Status")
+            print("8. Force Cleanup & Exit")
+            print("9. Exit (Auto-return to home)")
+            
+            choice = input("\nEnter choice (1-9): ").strip()
+            
+            if choice == "1":
+                turret.calibrate_home()
+            elif choice == "2":
+                if turret.team_number:
+                    print(f"Current team: {turret.team_number}")
+                    change = input("Change team? (y/n): ").strip().lower()
+                    if change != 'y':
+                        continue
+                
+                team = input("Enter your team number: ").strip()
+                if team:
+                    if turret.fetch_competition_data(team):
+                        print("\n✓ Competition data loaded successfully!")
+                        turret.print_status()
+            elif choice == "3":
+                turret.running = True
+                turret.motor_test_90()
+            elif choice == "4":
+                if not turret.team_number or not turret.competition_data:
+                    print("Please set team number and fetch competition data first (Option 2)")
+                else:
+                    turret.fire_at_closest_target()
+            elif choice == "5":
+                turret.fire_laser_test(1.0)
+            elif choice == "6":
+                turret.go_to_home()
+            elif choice == "7":
+                turret.print_status()
+            elif choice == "8":
+                print("Force cleanup...")
+                turret.force_cleanup()
+                print("Exiting...")
+                break
+            elif choice == "9":
+                print("Exiting with auto-return to home...")
+                break
+            else:
+                print("Invalid choice")
+            
+            turret.running = False
+            
+    except KeyboardInterrupt:
+        print("\nProgram interrupted - Auto-returning to home...")
+    except Exception as e:
+        print(f"\nError: {e}")
+        print("Auto-returning to home...")
+        import traceback
+        traceback.print_exc()
+    finally:
+        # The atexit handler will automatically call auto_return_to_home()
+        if turret and turret.gpio_initialized:
+            try:
+                turret.shift_out(0b00000000)
+                turret.laser_off()
+                GPIO.cleanup()
+            except:
+                pass
+        print("\nProgram ended.")
+
+if __name__ == "__main__":
+    # Check for required packages
+    try:
+        import requests
+    except ImportError:
+        print("Installing 'requests' package...")
+        import subprocess
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "requests"])
+        import requests
+    
+    main()
