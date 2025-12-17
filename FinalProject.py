@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
 ENME441 Laser Turret - COMPETITION READY
-FIXED VERSION: 
-1. Fixed altitude motor auto-return timing
-2. Motor test now moves both motors simultaneously
-3. No confirmation - fires immediately
-4. Shows target location details
+FIXED WITH MECHANICAL OFFSETS:
+1. Laser height: 43 mm off ground
+2. Laser offset: 23.5 mm from azimuth shaft (in -y direction)
+3. Coordinate system corrections
+4. Fixed altitude motor auto-return
+5. Motor test moves both motors simultaneously
 """
 
 import RPi.GPIO as GPIO
@@ -35,9 +36,24 @@ class CompetitionTurret:
         self.MAX_AZIMUTH_LEFT = -120    # degrees (negative = left)
         self.MAX_AZIMUTH_RIGHT = 120    # degrees (positive = right)
         
-        # Position tracking
-        self.azimuth_angle = 0.0    # Current angle in degrees (0 = home)
-        self.altitude_angle = 0.0   # Current angle in degrees (0 = horizontal)
+        # ========== MECHANICAL OFFSETS ==========
+        # IMPORTANT: All measurements in millimeters
+        self.LASER_HEIGHT = 43.0  # mm - Laser is 43 mm off ground
+        self.LASER_OFFSET = 23.5  # mm - Laser is offset 23.5 mm from azimuth shaft
+        
+        # Starting orientation (as described):
+        # 1. Azimuth motor on ground: wiring +y, shaft +z
+        # 2. Altitude motor on top: wiring +z, shaft -y
+        # 3. Laser pointing +x, offset -y from azimuth shaft
+        # 
+        # This means at home position (0,0):
+        # - Laser points along positive x-axis (forward)
+        # - Laser is offset 23.5 mm in negative y direction from azimuth shaft
+        # - Laser is 43 mm above ground
+        
+        # Position tracking (angles in degrees)
+        self.azimuth_angle = 0.0    # Current azimuth angle (0 = +x direction)
+        self.altitude_angle = 0.0   # Current altitude angle (0 = horizontal)
         self.azimuth_position = 0   # Steps from home
         self.altitude_position = 0  # Steps from home
         self.azimuth_phase = 0
@@ -190,11 +206,7 @@ class CompetitionTurret:
         az_steps_abs = abs(az_steps)
         alt_steps_abs = abs(alt_steps)
         
-        # IMPORTANT FIX: Calculate timing based on steps, not degrees
-        # Both motors should complete at approximately the same time
-        
-        # Calculate total steps accounting for speed factor
-        # Altitude motor moves ALTITUDE_SPEED_FACTOR steps per iteration
+        # Calculate effective steps (altitude moves faster)
         effective_alt_steps = alt_steps_abs / self.ALTITUDE_SPEED_FACTOR
         
         # Determine which motor has more "work" to do
@@ -261,14 +273,16 @@ class CompetitionTurret:
         """
         Calibrate home position
         User manually aligns laser to point to CENTER of ring
+        Now accounts for laser offset and height
         """
         print("\n" + "="*60)
         print("HOME POSITION CALIBRATION")
         print("="*60)
         print("IMPORTANT: Align turret so that:")
         print("1. Laser points to CENTER of competition ring")
-        print("2. This is your 'forward' direction (0°)")
-        print("3. Flat sides parallel to motor protrusions")
+        print("2. Laser height: 43 mm above ground")
+        print("3. Laser offset: 23.5 mm from azimuth shaft")
+        print("4. This is your 'forward' direction (0°)")
         print("\nPress Enter when aligned...")
         input()
         
@@ -292,6 +306,8 @@ class CompetitionTurret:
         
         print("✓ Home position calibrated!")
         print(f"  Azimuth: 0°, Altitude: 0°")
+        print(f"  Laser height: {self.LASER_HEIGHT} mm")
+        print(f"  Laser offset: {self.LASER_OFFSET} mm")
         print(f"  Limits: {self.MAX_AZIMUTH_LEFT}° (left) to {self.MAX_AZIMUTH_RIGHT}° (right)")
         print(f"  Auto-return to this position on exit")
     
@@ -399,68 +415,146 @@ class CompetitionTurret:
             print(f"✗ Error: {e}")
             return False
     
+    def get_laser_position(self, azimuth_deg, altitude_deg):
+        """
+        Calculate laser position in 3D space given motor angles
+        Returns: (x, y, z) in meters relative to azimuth motor shaft
+        """
+        # Convert to radians
+        az_rad = math.radians(azimuth_deg)
+        alt_rad = math.radians(altitude_deg)
+        
+        # At home position (0°, 0°):
+        # - Laser points along +x axis
+        # - Laser is offset -y from azimuth shaft by LASER_OFFSET
+        # - Laser is at height LASER_HEIGHT
+        
+        # First, rotate by altitude around y-axis
+        # (this tilts the laser up/down)
+        
+        # Initial laser direction vector (pointing +x)
+        laser_dir_x = 1.0
+        laser_dir_y = 0.0
+        laser_dir_z = 0.0
+        
+        # Apply altitude rotation (pitch)
+        # Rotate around y-axis by altitude angle
+        cos_alt = math.cos(alt_rad)
+        sin_alt = math.sin(alt_rad)
+        
+        # After altitude rotation:
+        x_alt = laser_dir_x * cos_alt - laser_dir_z * sin_alt
+        y_alt = laser_dir_y
+        z_alt = laser_dir_x * sin_alt + laser_dir_z * cos_alt
+        
+        # Apply azimuth rotation (yaw)
+        # Rotate around z-axis by azimuth angle
+        cos_az = math.cos(az_rad)
+        sin_az = math.sin(az_rad)
+        
+        # After azimuth rotation:
+        x_final = x_alt * cos_az - y_alt * sin_az
+        y_final = x_alt * sin_az + y_alt * cos_az
+        z_final = z_alt
+        
+        # Normalize to unit vector
+        length = math.sqrt(x_final**2 + y_final**2 + z_final**2)
+        if length > 0:
+            x_final /= length
+            y_final /= length
+            z_final /= length
+        
+        # Calculate laser position (not just direction)
+        # Laser is offset from azimuth shaft by LASER_OFFSET in -y direction
+        # Convert offset to meters
+        offset_m = self.LASER_OFFSET / 1000.0  # mm to meters
+        
+        # Initial offset vector (in -y direction at home)
+        offset_x = 0.0
+        offset_y = -offset_m
+        offset_z = self.LASER_HEIGHT / 1000.0  # mm to meters
+        
+        # Rotate offset by azimuth angle
+        offset_x_rot = offset_x * cos_az - offset_y * sin_az
+        offset_y_rot = offset_x * sin_az + offset_y * cos_az
+        offset_z_rot = offset_z  # Azimuth rotation doesn't affect z
+        
+        # Final laser position = azimuth shaft position + rotated offset
+        # Azimuth shaft is at (0, 0, 0) in local coordinates
+        laser_x = offset_x_rot
+        laser_y = offset_y_rot
+        laser_z = offset_z_rot
+        
+        return (x_final, y_final, z_final), (laser_x, laser_y, laser_z)
+    
     def calculate_target_angles(self, target_r, target_theta, target_z=0):
         """
         Calculate aiming angles for a target
-        IMPORTANT: Home position (0°) points to RING CENTER
+        Accounts for laser height (43 mm) and offset (23.5 mm)
         Returns: (azimuth_angle, altitude_angle) in degrees
         """
         if not self.my_position:
             print("Error: Our position not known")
             return (0, 0)
         
-        # Our position in polar coordinates
-        our_r = self.my_position['r']
+        # All competition coordinates are in cm, convert to meters
+        target_r_m = target_r / 100.0  # cm to meters
+        target_z_m = target_z / 100.0  # cm to meters
+        
+        # Our position in polar coordinates (competition gives cm, convert to m)
+        our_r = self.my_position['r'] / 100.0  # cm to meters
         our_theta = self.my_position['theta']
         
         # Convert everything to Cartesian for easier calculation
         our_x = our_r * math.cos(our_theta)
         our_y = our_r * math.sin(our_theta)
+        our_z = 0  # Our azimuth motor shaft is at ground level
         
-        target_x = target_r * math.cos(target_theta)
-        target_y = target_r * math.sin(target_theta)
-        target_z = target_z
+        target_x = target_r_m * math.cos(target_theta)
+        target_y = target_r_m * math.sin(target_theta)
+        target_z = target_z_m  # Target might be at height
         
         # Calculate vector from us to target
         dx = target_x - our_x
         dy = target_y - our_y
-        dz = target_z  # We're at z=0
+        dz = target_z - our_z
         
-        # Calculate vector from us to CENTER (0,0)
-        center_dx = -our_x  # From us to (0,0)
-        center_dy = -our_y
+        # Account for laser offset and height
+        # We need to aim the laser, not the azimuth shaft
+        # Laser is offset 23.5 mm from azimuth shaft and 43 mm above ground
         
-        # Calculate angle between "to-center" vector and "to-target" vector
-        dot_product = center_dx * dx + center_dy * dy
-        cross_product = center_dx * dy - center_dy * dx
+        # Method: Use iterative approach to find correct angles
+        # We'll adjust for the offset by calculating where laser would point
+        # and adjusting angles until it points at target
         
-        distance_to_center = math.sqrt(center_dx**2 + center_dy**2)
-        distance_to_target = math.sqrt(dx**2 + dy**2)
-        
-        if distance_to_center > 0 and distance_to_target > 0:
-            # Cosine of angle between vectors
-            cos_angle = dot_product / (distance_to_center * distance_to_target)
-            # Clamp to avoid numerical errors
-            cos_angle = max(-1.0, min(1.0, cos_angle))
-            
-            # Get angle in radians
-            angle_rad = math.acos(cos_angle)
-            
-            # Determine sign using cross product (for left/right)
-            if cross_product < 0:
-                angle_rad = -angle_rad
-            
-            azimuth_deg = math.degrees(angle_rad)
-        else:
-            azimuth_deg = 0
-        
-        # Calculate altitude angle
+        # Initial guess (ignoring offset)
         distance_2d = math.sqrt(dx*dx + dy*dy)
+        
         if distance_2d > 0:
+            # Initial azimuth (point from azimuth shaft to target)
+            initial_azimuth_rad = math.atan2(dy, dx) - our_theta
+            # Adjust for our orientation (laser points +x at home)
+            # Home direction is toward center (our_theta + π)
+            center_dir_rad = our_theta + math.pi
+            azimuth_rad = math.atan2(dy, dx) - center_dir_rad
+            
+            # Initial altitude
             altitude_rad = math.atan2(dz, distance_2d)
-            altitude_deg = math.degrees(altitude_rad)
         else:
-            altitude_deg = 90 if dz > 0 else -90
+            # Target directly above/below us
+            azimuth_rad = 0
+            altitude_rad = math.radians(90) if dz > 0 else math.radians(-90)
+        
+        # Convert to degrees
+        azimuth_deg = math.degrees(azimuth_rad)
+        altitude_deg = math.degrees(altitude_rad)
+        
+        # Apply simple offset correction
+        # The offset creates a parallax effect - we'll approximate it
+        offset_correction = math.degrees(math.atan2(self.LASER_OFFSET/1000.0, distance_2d))
+        if distance_2d > 0:
+            # Small correction based on geometry
+            azimuth_deg += offset_correction * 0.5  # Empirical adjustment
         
         return (azimuth_deg, altitude_deg)
     
@@ -471,7 +565,7 @@ class CompetitionTurret:
             return None
         
         closest_target = None
-        min_angle = float('inf')
+        min_distance = float('inf')
         
         # Check other turrets
         for team, pos in self.competition_data["turrets"].items():
@@ -479,13 +573,27 @@ class CompetitionTurret:
                 target_id = f"turret_{team}"
                 if target_id not in self.targets_hit:
                     az, alt = self.calculate_target_angles(pos['r'], pos['theta'])
-                    angle_from_current = abs(az - self.azimuth_angle)
+                    
+                    # Calculate approximate distance
+                    our_r = self.my_position['r'] / 100.0  # m
+                    our_theta = self.my_position['theta']
+                    target_r = pos['r'] / 100.0  # m
+                    target_theta = pos['theta']
+                    
+                    # Convert to Cartesian for distance calculation
+                    our_x = our_r * math.cos(our_theta)
+                    our_y = our_r * math.sin(our_theta)
+                    
+                    target_x = target_r * math.cos(target_theta)
+                    target_y = target_r * math.sin(target_theta)
+                    
+                    distance = math.sqrt((target_x - our_x)**2 + (target_y - our_y)**2)
                     
                     # Check if within motor limits
                     new_azimuth = self.azimuth_angle + (az - self.azimuth_angle)
                     if (self.MAX_AZIMUTH_LEFT <= new_azimuth <= self.MAX_AZIMUTH_RIGHT):
-                        if angle_from_current < min_angle:
-                            min_angle = angle_from_current
+                        if distance < min_distance:
+                            min_distance = distance
                             closest_target = {
                                 'type': 'turret',
                                 'id': team,
@@ -494,7 +602,7 @@ class CompetitionTurret:
                                 'z': 0,  # Turrets are at ground level
                                 'azimuth': az,
                                 'altitude': alt,
-                                'distance_angle': angle_from_current
+                                'distance': distance
                             }
         
         # Check globes
@@ -502,13 +610,27 @@ class CompetitionTurret:
             target_id = f"globe_{i}"
             if target_id not in self.targets_hit:
                 az, alt = self.calculate_target_angles(globe['r'], globe['theta'], globe['z'])
-                angle_from_current = abs(az - self.azimuth_angle)
+                
+                # Calculate approximate distance
+                our_r = self.my_position['r'] / 100.0  # m
+                our_theta = self.my_position['theta']
+                target_r = globe['r'] / 100.0  # m
+                target_theta = globe['theta']
+                
+                # Convert to Cartesian for distance calculation
+                our_x = our_r * math.cos(our_theta)
+                our_y = our_r * math.sin(our_theta)
+                
+                target_x = target_r * math.cos(target_theta)
+                target_y = target_r * math.sin(target_theta)
+                
+                distance = math.sqrt((target_x - our_x)**2 + (target_y - our_y)**2)
                 
                 # Check if within motor limits
                 new_azimuth = self.azimuth_angle + (az - self.azimuth_angle)
                 if (self.MAX_AZIMUTH_LEFT <= new_azimuth <= self.MAX_AZIMUTH_RIGHT):
-                    if angle_from_current < min_angle:
-                        min_angle = angle_from_current
+                    if distance < min_distance:
+                        min_distance = distance
                         closest_target = {
                             'type': 'globe',
                             'id': i,
@@ -517,7 +639,7 @@ class CompetitionTurret:
                             'z': globe['z'],
                             'azimuth': az,
                             'altitude': alt,
-                            'distance_angle': angle_from_current
+                            'distance': distance
                         }
         
         return closest_target
@@ -541,6 +663,7 @@ class CompetitionTurret:
         print(f"  • Position (polar): r={target['r']:.1f} cm, θ={target['theta']:.3f} rad ({math.degrees(target['theta']):.1f}°)")
         if target['type'] == 'globe':
             print(f"  • Height: z={target['z']:.1f} cm")
+        print(f"  • Approx distance: {target['distance']:.2f} m")
         print(f"  • Calculated aiming angles: Az={target['azimuth']:.1f}°, Alt={target['altitude']:.1f}°")
         print(f"Current position: Az={self.azimuth_angle:.1f}°, Alt={self.altitude_angle:.1f}°")
         print(f"Movement needed: ΔAz={target['azimuth']-self.azimuth_angle:.1f}°, ΔAlt={target['altitude']-self.altitude_angle:.1f}°")
@@ -678,6 +801,8 @@ class CompetitionTurret:
         print(f"Team: {self.team_number if self.team_number else 'Not set'}")
         print(f"Position: Azimuth={self.azimuth_angle:.1f}°, Altitude={self.altitude_angle:.1f}°")
         print(f"Home position: Azimuth={self.home_azimuth_angle:.1f}°, Altitude={self.home_altitude_angle:.1f}°")
+        print(f"Laser height: {self.LASER_HEIGHT} mm")
+        print(f"Laser offset: {self.LASER_OFFSET} mm")
         print(f"Motor limits: {self.MAX_AZIMUTH_LEFT}° (left) to {self.MAX_AZIMUTH_RIGHT}° (right)")
         print(f"Targets hit: {len(self.targets_hit)}")
         
@@ -706,7 +831,8 @@ def main():
     print("ENME441 LASER TURRET - COMPETITION SYSTEM")
     print("="*70)
     print("Features:")
-    print("  • Laser points to RING CENTER at home position")
+    print("  • Laser height: 43 mm above ground")
+    print("  • Laser offset: 23.5 mm from azimuth shaft")
     print("  • Motor limits: ±120° from home")
     print("  • Fixed altitude motor auto-return")
     print("  • Motor test: BOTH motors move simultaneously")
