@@ -1,7 +1,7 @@
 import requests
 
 # Replace with your laptop's actual IP
-LAPTOP_IP = "192.168.43.50"  # <-- CHANGE THIS
+LAPTOP_IP = "172.20.10.8"  # <-- CHANGE THIS
 
 url = f"http://{LAPTOP_IP}:8000/positions.json"
 
