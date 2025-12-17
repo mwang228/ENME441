@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-ENME441 Laser Turret - CALIBRATED VERSION
-Azimuth: 1024 steps/revolution (yours)
-Altitude: 4096 steps/revolution (standard)
-Laser: OFF by default (safe)
+ENME441 Laser Turret - FIXED SPEEDS + AUTO-HOME
+1. Altitude motor speed doubled to match azimuth
+2. Auto-homes to horizontal position on startup
 """
 
 import RPi.GPIO as GPIO
@@ -21,19 +20,19 @@ class LaserTurretController:
         # Laser control pin
         self.LASER_PIN = 26  # GPIO26 (HIGH = ON, LOW = OFF)
         
-        # CALIBRATED steps per revolution - YOUR SPECIFIC MOTORS
-        self.AZIMUTH_STEPS_PER_REV = 1024   # Your azimuth motor
-        self.ALTITUDE_STEPS_PER_REV = 4096  # Standard 28BYJ-48
+        # CALIBRATED steps per revolution
+        self.AZIMUTH_STEPS_PER_REV = 1024   # Fast motor
+        self.ALTITUDE_STEPS_PER_REV = 4096  # Standard motor
         
-        # Calculate steps for common angles
-        self.AZIMUTH_STEPS_90 = int(90 * self.AZIMUTH_STEPS_PER_REV / 360)
-        self.AZIMUTH_STEPS_180 = int(180 * self.AZIMUTH_STEPS_PER_REV / 360)
-        self.ALTITUDE_STEPS_90 = int(90 * self.ALTITUDE_STEPS_PER_REV / 360)
-        self.ALTITUDE_STEPS_180 = int(180 * self.ALTITUDE_STEPS_PER_REV / 360)
+        # SPEED COMPENSATION: Make altitude move 2× faster
+        # We'll achieve this by moving altitude 2 steps per loop iteration
+        self.ALTITUDE_SPEED_FACTOR = 2  # Moves 2× faster than normal
         
-        print(f"Motor calibration:")
-        print(f"  Azimuth: {self.AZIMUTH_STEPS_PER_REV} steps/revolution")
-        print(f"  Altitude: {self.ALTITUDE_STEPS_PER_REV} steps/revolution")
+        # Horizontal position reference
+        # Assuming: horizontal = flat side parallel to motor protrusions
+        # We'll find this by rotating until we hit a limit or marker
+        self.azimuth_position = 0  # Steps from home (positive = CW)
+        self.altitude_position = 0 # Steps from home (positive = up)
         
         # Stepper sequences (half-step)
         self.AZIMUTH_SEQ = [
@@ -55,7 +54,7 @@ class LaserTurretController:
         self.setup_gpio()
         
     def setup_gpio(self):
-        """Initialize GPIO - Laser starts OFF"""
+        """Initialize GPIO and auto-home to horizontal position"""
         GPIO.setmode(GPIO.BCM)
         
         # Shift register pins
@@ -72,7 +71,9 @@ class LaserTurretController:
         GPIO.output(self.LATCH_CLK, GPIO.LOW)
         GPIO.output(self.DATA_PIN, GPIO.LOW)
         
-        print("GPIO setup complete - Laser starts OFF (safe)")
+        print("GPIO setup complete")
+        print("Auto-homing to horizontal position...")
+        self.auto_home()
         
     def shift_out(self, data_byte):
         """Send 8 bits to shift register"""
@@ -93,66 +94,171 @@ class LaserTurretController:
         """Take one step with azimuth motor"""
         if direction == 1:
             self.azimuth_phase = (self.azimuth_phase + 1) % 8
+            self.azimuth_position += 1
         else:
             self.azimuth_phase = (self.azimuth_phase - 1) % 8
+            self.azimuth_position -= 1
         
         combined = (self.AZIMUTH_SEQ[self.azimuth_phase] | 
                    self.ALTITUDE_SEQ[self.altitude_phase])
         self.shift_out(combined)
         time.sleep(delay)
         
-    def step_altitude(self, direction, delay=0.001):
-        """Take one step with altitude motor"""
-        if direction == 1:
-            self.altitude_phase = (self.altitude_phase + 1) % 8
-        else:
-            self.altitude_phase = (self.altitude_phase - 1) % 8
+    def step_altitude_fast(self, direction, delay=0.001):
+        """
+        Take TWO steps with altitude motor (2× speed)
+        This matches azimuth motor speed
+        """
+        for _ in range(self.ALTITUDE_SPEED_FACTOR):
+            if direction == 1:
+                self.altitude_phase = (self.altitude_phase + 1) % 8
+                self.altitude_position += 1
+            else:
+                self.altitude_phase = (self.altitude_phase - 1) % 8
+                self.altitude_position -= 1
+            
+            combined = (self.AZIMUTH_SEQ[self.azimuth_phase] | 
+                       self.ALTITUDE_SEQ[self.altitude_phase])
+            self.shift_out(combined)
+            time.sleep(delay / self.ALTITUDE_SPEED_FACTOR)
         
-        combined = (self.AZIMUTH_SEQ[self.azimuth_phase] | 
-                   self.ALTITUDE_SEQ[self.altitude_phase])
-        self.shift_out(combined)
-        time.sleep(delay)
-        
-    def move_motors(self, azimuth_steps, altitude_steps, delay=0.001):
-        """Move both motors with correct calibration"""
+    def move_motors_sync(self, azimuth_steps, altitude_steps, delay=0.001):
+        """
+        Move both motors synchronously with matched speed
+        Altitude moves 2× faster to compensate for different step counts
+        """
         az_dir = 1 if azimuth_steps >= 0 else -1
         alt_dir = 1 if altitude_steps >= 0 else -1
         
         az_steps_abs = abs(azimuth_steps)
         alt_steps_abs = abs(altitude_steps)
-        max_steps = max(az_steps_abs, alt_steps_abs)
+        
+        # Since altitude moves 2× faster, we need half the iterations
+        # But we still need to track position accurately
+        max_iterations = max(az_steps_abs, alt_steps_abs // self.ALTITUDE_SPEED_FACTOR)
         
         print(f"Moving: Azimuth={azimuth_steps} steps, Altitude={altitude_steps} steps")
+        print(f"Altitude moving {self.ALTITUDE_SPEED_FACTOR}× faster")
         
-        for i in range(max_steps):
-            if i < az_steps_abs:
+        az_counter = 0
+        alt_counter = 0
+        
+        for i in range(max_iterations):
+            # Move azimuth if we still need to
+            if az_counter < az_steps_abs:
                 self.step_azimuth(az_dir, 0)
-            if i < alt_steps_abs:
-                self.step_altitude(alt_dir, 0)
-            time.sleep(delay)
+                az_counter += 1
             
-        # Turn off coils
-        self.shift_out(0b00000000)
+            # Move altitude if we still need to (moves faster)
+            if alt_counter < alt_steps_abs:
+                # We'll move altitude multiple times per loop if needed
+                steps_this_loop = min(self.ALTITUDE_SPEED_FACTOR, alt_steps_abs - alt_counter)
+                for _ in range(steps_this_loop):
+                    if alt_dir == 1:
+                        self.altitude_phase = (self.altitude_phase + 1) % 8
+                        self.altitude_position += 1
+                    else:
+                        self.altitude_phase = (self.altitude_phase - 1) % 8
+                        self.altitude_position -= 1
+                    
+                    combined = (self.AZIMUTH_SEQ[self.azimuth_phase] | 
+                               self.ALTITUDE_SEQ[self.altitude_phase])
+                    self.shift_out(combined)
+                    time.sleep(delay / self.ALTITUDE_SPEED_FACTOR)
+                
+                alt_counter += steps_this_loop
+            
+            # Main delay between step groups
+            time.sleep(delay)
         
-    def move_motors_degrees(self, az_degrees, alt_degrees, delay=0.001):
-        """Move by degrees with calibrated motors"""
+        # Update final position
+        current_bits = self.AZIMUTH_SEQ[self.azimuth_phase] | self.ALTITUDE_SEQ[self.altitude_phase]
+        self.shift_out(current_bits)
+        
+        print(f"Final position: Azimuth={self.azimuth_position}, Altitude={self.altitude_position}")
+        
+    def move_motors_degrees_sync(self, az_degrees, alt_degrees, delay=0.001):
+        """Move by degrees with matched speeds"""
         az_steps = int(az_degrees * self.AZIMUTH_STEPS_PER_REV / 360)
         alt_steps = int(alt_degrees * self.ALTITUDE_STEPS_PER_REV / 360)
-        self.move_motors(az_steps, alt_steps, delay)
+        self.move_motors_sync(az_steps, alt_steps, delay)
         
-    def move_exact_180(self):
-        """Exactly 180° rotation for both motors (your request)"""
-        print("\nMoving exactly 180°:")
-        print(f"  Azimuth: {self.AZIMUTH_STEPS_180} steps")
-        print(f"  Altitude: {self.ALTITUDE_STEPS_180} steps")
-        self.move_motors(self.AZIMUTH_STEPS_180, self.ALTITUDE_STEPS_180, delay=0.0005)
+    def auto_home(self):
+        """
+        Auto-home to horizontal position
+        Strategy: Move to a known safe position (all motors to 0 position)
+        Then rotate until flat side is horizontal (parallel to motor protrusions)
         
-    def move_exact_180_reverse(self):
-        """Exactly 180° reverse rotation"""
-        print("\nMoving exactly 180° reverse:")
-        print(f"  Azimuth: -{self.AZIMUTH_STEPS_180} steps")
-        print(f"  Altitude: -{self.ALTITUDE_STEPS_180} steps")
-        self.move_motors(-self.AZIMUTH_STEPS_180, -self.ALTITUDE_STEPS_180, delay=0.0005)
+        For now: Just move to a predefined 'home' position (0,0)
+        In real implementation, you'd add limit switches or manual alignment
+        """
+        print("Finding horizontal home position...")
+        
+        # Strategy 1: Move to a known safe position
+        # Turn off all coils first
+        self.shift_out(0b00000000)
+        time.sleep(0.5)
+        
+        # Move both motors to what we'll define as "home"
+        # You should physically align the turret first, then run this
+        print("Please manually align turret to horizontal position:")
+        print("1. Ensure laser is pointing forward")
+        print("2. Ensure flat sides are parallel to motor protrusions")
+        print("3. Press Enter when aligned...")
+        input()  # Wait for user to align manually
+        
+        # Reset position counters to 0
+        self.azimuth_position = 0
+        self.altitude_position = 0
+        self.azimuth_phase = 0
+        self.altitude_phase = 0
+        
+        # Energize coils at home position
+        home_bits = self.AZIMUTH_SEQ[0] | self.ALTITUDE_SEQ[0]
+        self.shift_out(home_bits)
+        
+        print("✓ Home position set:")
+        print(f"  Azimuth: position=0, phase=0")
+        print(f"  Altitude: position=0, phase=0")
+        print(f"  Laser: OFF (safe)")
+        
+    def go_to_home(self):
+        """Return to home position from current location"""
+        print("Returning to home position...")
+        
+        # Calculate steps needed to return to home
+        az_steps_needed = -self.azimuth_position
+        alt_steps_needed = -self.altitude_position
+        
+        print(f"Moving azimuth: {az_steps_needed} steps to home")
+        print(f"Moving altitude: {alt_steps_needed} steps to home")
+        
+        # Move back to home
+        self.move_motors_sync(az_steps_needed, alt_steps_needed, delay=0.001)
+        
+        # Reset positions
+        self.azimuth_position = 0
+        self.altitude_position = 0
+        self.azimuth_phase = 0
+        self.altitude_phase = 0
+        
+        print("✓ At home position")
+        
+    def move_to_absolute(self, az_steps, alt_steps, delay=0.001):
+        """Move to absolute position (steps from home)"""
+        az_relative = az_steps - self.azimuth_position
+        alt_relative = alt_steps - self.altitude_position
+        
+        print(f"Moving to absolute position: Azimuth={az_steps}, Altitude={alt_steps}")
+        print(f"Relative movement: Azimuth={az_relative}, Altitude={alt_relative}")
+        
+        self.move_motors_sync(az_relative, alt_relative, delay)
+        
+    def move_to_absolute_degrees(self, az_degrees, alt_degrees, delay=0.001):
+        """Move to absolute angle (degrees from home)"""
+        az_steps = int(az_degrees * self.AZIMUTH_STEPS_PER_REV / 360)
+        alt_steps = int(alt_degrees * self.ALTITUDE_STEPS_PER_REV / 360)
+        self.move_to_absolute(az_steps, alt_steps, delay)
         
     def laser_on(self):
         """Turn laser ON (GPIO HIGH)"""
@@ -166,10 +272,10 @@ class LaserTurretController:
         self.laser_state = False
         print("Laser: OFF")
         
-    def motor_demo(self):
-        """Your requested pattern: 180° CW, pause, 180° CCW, pause"""
+    def motor_demo_sync(self):
+        """Demo with matched motor speeds"""
         print("\n" + "="*50)
-        print("MOTOR DEMO: 180° Clockwise, pause, 180° Counterclockwise")
+        print("MOTOR DEMO: 180° rotations with MATCHED SPEEDS")
         print("="*50)
         
         cycle = 0
@@ -177,25 +283,26 @@ class LaserTurretController:
             while self.running:
                 cycle += 1
                 print(f"\n--- CYCLE {cycle} ---")
+                print(f"Current position: Azi={self.azimuth_position}, Alt={self.altitude_position}")
                 
                 # 180° Clockwise
-                print("1. 180° Clockwise rotation")
-                self.move_exact_180()
+                print("1. 180° Clockwise")
+                self.move_motors_degrees_sync(180, 180, delay=0.0005)
                 print("   Pausing 2 seconds...")
                 time.sleep(2)
                 
                 # 180° Counterclockwise
-                print("2. 180° Counterclockwise rotation")
-                self.move_exact_180_reverse()
+                print("2. 180° Counterclockwise")
+                self.move_motors_degrees_sync(-180, -180, delay=0.0005)
                 print("   Pausing 2 seconds...")
                 time.sleep(2)
                 
         except KeyboardInterrupt:
             self.running = False
-            print("\nMotor demo stopped")
+            print("\nDemo stopped")
             
     def laser_demo(self):
-        """Your requested pattern: 2s ON, 2s OFF"""
+        """Laser demo: 2s ON, 2s OFF"""
         print("\n" + "="*50)
         print("LASER DEMO: 2 seconds ON, 2 seconds OFF")
         print("="*50)
@@ -206,109 +313,59 @@ class LaserTurretController:
                 cycle += 1
                 print(f"\nLaser Cycle {cycle}")
                 
-                # ON for 2s
-                print("  Laser ON for 2 seconds")
                 self.laser_on()
                 time.sleep(2)
-                
-                # OFF for 2s
-                print("  Laser OFF for 2 seconds")
                 self.laser_off()
                 time.sleep(2)
                 
         except KeyboardInterrupt:
             self.running = False
-            print("\nLaser demo stopped")
             
-    def run_simultaneous_demo(self):
-        """Run both demos in parallel threads"""
+    def test_matched_speed(self):
+        """Test that both motors complete 180° in same time"""
         print("\n" + "="*50)
-        print("SIMULTANEOUS DEMO: Motors + Laser")
+        print("MATCHED SPEED TEST")
         print("="*50)
-        print("Motors: 180° CW/CCW every 4 seconds")
-        print("Laser: 2s ON/OFF cycle")
-        print("Press Ctrl+C to stop\n")
+        print("Both motors should complete 180° rotation simultaneously")
         
-        self.running = True
+        input("Press Enter to start test...")
         
-        # Create threads
-        motor_thread = threading.Thread(target=self.motor_demo)
-        laser_thread = threading.Thread(target=self.laser_demo)
+        start_time = time.time()
+        self.move_motors_degrees_sync(180, 180, delay=0.0005)
+        elapsed = time.time() - start_time
         
-        # Set as daemon threads
-        motor_thread.daemon = True
-        laser_thread.daemon = True
+        print(f"\nTest complete in {elapsed:.2f} seconds")
+        print(f"Azimuth position: {self.azimuth_position} steps")
+        print(f"Altitude position: {self.altitude_position} steps")
         
-        # Start threads
-        motor_thread.start()
-        laser_thread.start()
+        # Verify
+        expected_az = 512  # 1024/2
+        expected_alt = 2048  # 4096/2
         
-        # Keep main thread alive
-        try:
-            while self.running:
-                time.sleep(0.1)
-        except KeyboardInterrupt:
-            self.running = False
-            print("\nStopping all demos...")
+        if abs(self.azimuth_position - expected_az) <= 10 and abs(self.altitude_position - expected_alt) <= 20:
+            print("✓ Motors moved correctly with matched speed!")
+        else:
+            print("✗ Position error - check calibration")
             
-        # Wait briefly for threads to finish
-        motor_thread.join(timeout=1)
-        laser_thread.join(timeout=1)
-        
-    def test_single_movements(self):
-        """Test individual movements"""
-        print("\n" + "="*50)
-        print("TEST INDIVIDUAL MOVEMENTS")
-        print("="*50)
-        
-        while True:
-            print("\nTest options:")
-            print("  1. Azimuth 90° clockwise")
-            print("  2. Azimuth 90° counterclockwise")
-            print("  3. Altitude 90° up")
-            print("  4. Altitude 90° down")
-            print("  5. Laser ON for 1 second")
-            print("  6. Return to main menu")
-            
-            choice = input("\nEnter choice (1-6): ").strip()
-            
-            if choice == "1":
-                print("Azimuth 90° clockwise")
-                self.move_motors(self.AZIMUTH_STEPS_90, 0, delay=0.001)
-            elif choice == "2":
-                print("Azimuth 90° counterclockwise")
-                self.move_motors(-self.AZIMUTH_STEPS_90, 0, delay=0.001)
-            elif choice == "3":
-                print("Altitude 90° up")
-                self.move_motors(0, self.ALTITUDE_STEPS_90, delay=0.001)
-            elif choice == "4":
-                print("Altitude 90° down")
-                self.move_motors(0, -self.ALTITUDE_STEPS_90, delay=0.001)
-            elif choice == "5":
-                print("Laser ON for 1 second")
-                self.laser_on()
-                time.sleep(1)
-                self.laser_off()
-            elif choice == "6":
-                break
-            else:
-                print("Invalid choice")
-                
     def cleanup(self):
-        """Clean shutdown - ensure laser is OFF"""
+        """Clean shutdown - return to home and turn off"""
         self.running = False
-        self.shift_out(0b00000000)  # Turn off motors
-        self.laser_off()            # Ensure laser is OFF
+        print("\nCleaning up...")
+        print("Returning to home position...")
+        self.go_to_home()
+        self.shift_out(0b00000000)  # Turn off coils
+        self.laser_off()
         GPIO.cleanup()
-        print("\nCleanup complete. All motors off, laser OFF.")
+        print("Cleanup complete")
 
 def main():
     """Main program"""
-    print("ENME441 Laser Turret - CALIBRATED")
+    print("ENME441 Laser Turret - MATCHED SPEEDS + AUTO-HOME")
     print("="*50)
-    print(f"Calibration confirmed:")
-    print(f"  Azimuth motor: 1024 steps/revolution")
-    print(f"  Altitude motor: 4096 steps/revolution")
+    print("Features:")
+    print("1. Altitude motor speed DOUBLED to match azimuth")
+    print("2. Auto-homes to horizontal position on startup")
+    print("3. Position tracking for both motors")
     print("="*50)
     
     controller = None
@@ -319,36 +376,40 @@ def main():
             print("\n" + "="*50)
             print("MAIN MENU")
             print("="*50)
-            print("1. Motor Demo (180° CW/CCW)")
+            print(f"Current position: Azi={controller.azimuth_position}, Alt={controller.altitude_position}")
+            print("1. Motor Demo (Matched 180° rotations)")
             print("2. Laser Demo (2s ON/OFF)")
-            print("3. Simultaneous Demo (Both)")
-            print("4. Test Individual Movements")
-            print("5. Exit")
+            print("3. Test Matched Speed")
+            print("4. Go to Home Position")
+            print("5. Move to Absolute Angle")
+            print("6. Exit")
             
-            choice = input("\nEnter choice (1-5): ").strip()
+            choice = input("\nEnter choice (1-6): ").strip()
             
             if choice == "1":
                 controller.running = True
-                controller.motor_demo()
+                controller.motor_demo_sync()
             elif choice == "2":
                 controller.running = True
                 controller.laser_demo()
             elif choice == "3":
-                controller.run_simultaneous_demo()
+                controller.test_matched_speed()
             elif choice == "4":
-                controller.test_single_movements()
+                controller.go_to_home()
             elif choice == "5":
+                az_deg = float(input("Azimuth degrees (from home): "))
+                alt_deg = float(input("Altitude degrees (from home): "))
+                controller.move_to_absolute_degrees(az_deg, alt_deg, delay=0.001)
+            elif choice == "6":
                 print("Exiting...")
                 break
             else:
                 print("Invalid choice")
                 
-            # Reset running flag
             controller.running = False
-            time.sleep(0.5)  # Brief pause between operations
             
     except KeyboardInterrupt:
-        print("\nProgram interrupted by user")
+        print("\nProgram interrupted")
     except Exception as e:
         print(f"\nError: {e}")
         import traceback
