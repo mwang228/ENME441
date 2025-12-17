@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ENME441 Laser Turret - COMPETITION READY
-Simplified version with manual controls and automated firing sequence
+Fixed: Altitude motor adjustment and target selection
 """
 
 import RPi.GPIO as GPIO
@@ -263,7 +263,7 @@ class CompetitionTurret:
             print("Laser fired.")
     
     def manual_adjust_motors(self):
-        """Manually set motor angles"""
+        """Manually set motor angles - FIXED ALTITUDE ISSUE"""
         print("\n" + "="*60)
         print("MANUAL MOTOR ADJUSTMENT")
         print("="*60)
@@ -272,9 +272,8 @@ class CompetitionTurret:
         print(f"Azimuth limits: {self.MAX_AZIMUTH_LEFT}° to {self.MAX_AZIMUTH_RIGHT}°")
         
         try:
+            # Get azimuth input
             az_input = input(f"\nEnter azimuth angle (-120 to 120, current={self.azimuth_angle:.1f}): ").strip()
-            alt_input = input(f"Enter altitude angle (current={self.altitude_angle:.1f}): ").strip()
-            
             if az_input:
                 new_az = float(az_input)
                 if new_az < self.MAX_AZIMUTH_LEFT or new_az > self.MAX_AZIMUTH_RIGHT:
@@ -283,6 +282,8 @@ class CompetitionTurret:
             else:
                 new_az = self.azimuth_angle
             
+            # Get altitude input - NO RANGE LIMITS FOR ALTITUDE
+            alt_input = input(f"Enter altitude angle (current={self.altitude_angle:.1f}): ").strip()
             if alt_input:
                 new_alt = float(alt_input)
             else:
@@ -290,14 +291,16 @@ class CompetitionTurret:
             
             print(f"\nMoving to: Azimuth={new_az:.1f}°, Altitude={new_alt:.1f}°")
             
-            success = self.move_motors_degrees_sync(
-                new_az - self.azimuth_angle,
-                new_alt - self.altitude_angle,
-                0.001
-            )
+            # Calculate movement needed
+            az_move = new_az - self.azimuth_angle
+            alt_move = new_alt - self.altitude_angle
+            
+            print(f"Movement needed: ΔAz={az_move:.1f}°, ΔAlt={alt_move:.1f}°")
+            
+            success = self.move_motors_degrees_sync(az_move, alt_move, 0.001)
             
             if success:
-                print("✓ Motors moved to specified position")
+                print(f"✓ Motors moved to: Azimuth={self.azimuth_angle:.1f}°, Altitude={self.altitude_angle:.1f}°")
             else:
                 print("⚠ Could not move to position (motor limits?)")
                 
@@ -438,10 +441,13 @@ class CompetitionTurret:
         return (azimuth_deg, altitude_deg)
     
     def find_next_target(self):
-        """Find next target that hasn't been hit yet"""
+        """Find next target that hasn't been hit yet - FIXED TARGET SELECTION"""
         if not self.competition_data:
             print("No competition data loaded.")
             return None
+        
+        # Store all valid targets
+        valid_targets = []
         
         # Check other turrets first
         for team, pos in self.competition_data["turrets"].items():
@@ -453,15 +459,16 @@ class CompetitionTurret:
                     # NO RANGE CHECK - fire at any target within azimuth limits
                     new_azimuth = self.azimuth_angle + (az - self.azimuth_angle)
                     if (self.MAX_AZIMUTH_LEFT <= new_azimuth <= self.MAX_AZIMUTH_RIGHT):
-                        return {
+                        valid_targets.append({
                             'type': 'turret',
                             'id': team,
                             'r': pos['r'],
                             'theta': pos['theta'],
                             'z': 0,
                             'azimuth': az,
-                            'altitude': alt
-                        }
+                            'altitude': alt,
+                            'priority': 1  # Turrets first
+                        })
         
         # Check globes
         for i, globe in enumerate(self.competition_data["globes"]):
@@ -472,20 +479,27 @@ class CompetitionTurret:
                 # NO RANGE CHECK - fire at any target within azimuth limits
                 new_azimuth = self.azimuth_angle + (az - self.azimuth_angle)
                 if (self.MAX_AZIMUTH_LEFT <= new_azimuth <= self.MAX_AZIMUTH_RIGHT):
-                    return {
+                    valid_targets.append({
                         'type': 'globe',
                         'id': i,
                         'r': globe['r'],
                         'theta': globe['theta'],
                         'z': globe['z'],
                         'azimuth': az,
-                        'altitude': alt
-                    }
+                        'altitude': alt,
+                        'priority': 2  # Globes second
+                    })
         
-        return None
+        if not valid_targets:
+            return None
+        
+        # Sort by priority (turrets first) and then by angular distance
+        valid_targets.sort(key=lambda x: (x['priority'], abs(x['azimuth'] - self.azimuth_angle)))
+        
+        return valid_targets[0]  # Return closest target by priority/angle
     
     def initiate_firing_sequence(self):
-        """Fire at ALL targets in sequence"""
+        """Fire at ALL targets in sequence - FIXED TO CONTINUE FIRING"""
         print("\n" + "="*60)
         print("INITIATING FIRING SEQUENCE")
         print("="*60)
@@ -503,16 +517,26 @@ class CompetitionTurret:
         print(f"Targets already hit: {len(self.targets_hit)}")
         print(f"Remaining targets: {total_targets - len(self.targets_hit)}")
         
+        if total_targets - len(self.targets_hit) == 0:
+            print("All targets have already been hit!")
+            reset = input("Reset targets and start over? (y/n): ").strip().lower()
+            if reset == 'y':
+                self.targets_hit.clear()
+                print("Targets reset. Starting fresh...")
+            else:
+                return
+        
         input("\nPress Enter to begin firing sequence...")
         
         targets_fired = 0
         original_position = (self.azimuth_angle, self.altitude_angle)
         
         try:
+            # Continue firing until no more targets
             while True:
                 target = self.find_next_target()
                 if not target:
-                    print("\nNo more targets found!")
+                    print("\nNo more targets found within azimuth limits!")
                     break
                 
                 print(f"\n--- Target {targets_fired + 1} ---")
@@ -535,6 +559,9 @@ class CompetitionTurret:
                 
                 if not success:
                     print("⚠ Could not move to target (motor limits?)")
+                    # Mark as hit anyway to avoid getting stuck
+                    target_id = f"{target['type']}_{target['id']}"
+                    self.targets_hit.add(target_id)
                     continue
                 
                 print("✓ Aimed at target")
@@ -549,17 +576,14 @@ class CompetitionTurret:
                 time.sleep(1.0)  # WAIT 1 SECOND BEFORE MOVING
                 
                 # Mark target as hit
-                if target['type'] == 'turret':
-                    target_id = f"turret_{target['id']}"
-                else:
-                    target_id = f"globe_{target['id']}"
-                
+                target_id = f"{target['type']}_{target['id']}"
                 self.targets_hit.add(target_id)
                 targets_fired += 1
                 print(f"✓ Target hit! ({targets_fired}/{total_targets})")
             
             print(f"\n✓ Firing sequence complete!")
-            print(f"Total targets hit: {targets_fired}")
+            print(f"Total targets hit in this session: {targets_fired}")
+            print(f"Total targets hit overall: {len(self.targets_hit)}/{total_targets}")
             
             # Return to original position
             print("\nReturning to original position...")
