@@ -1,10 +1,9 @@
-# Save this as json_server.py on your laptop
+# Save this as test_server.py on your LAPTOP
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import json
-import socket
 
-# Your competition coordinates (edit as needed)
-COMPETITION_DATA = {
+# Test data matching competition format
+positions = {
     "turrets": {
         "1": {"r": 300.0, "theta": 2.580},
         "2": {"r": 300.0, "theta": 0.661},
@@ -20,39 +19,29 @@ COMPETITION_DATA = {
 class JSONHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/positions.json":
-            response = json.dumps(COMPETITION_DATA).encode("utf-8")
+            response = json.dumps(positions).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(response)))
             self.end_headers()
             self.wfile.write(response)
+            print(f"Served JSON to {self.client_address[0]}")
         else:
             self.send_response(404)
             self.end_headers()
             self.wfile.write(b"Not found")
     
     def log_message(self, format, *args):
-        # Suppress default logging
-        pass
-
-def get_local_ip():
-    """Get laptop's local IP address"""
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-    except Exception:
-        ip = "127.0.0.1"
-    finally:
-        s.close()
-    return ip
+        pass  # Suppress default logs
 
 def run_server():
-    HOST = get_local_ip()  # Automatically detect IP
+    # Use your laptop's IP address
+    HOST = "0.0.0.0"  # Listen on all interfaces
     PORT = 8000
-    print(f"Starting JSON server at http://{HOST}:{PORT}/positions.json")
-    print(f"Server IP: {HOST}")
-    print("Press Ctrl+C to stop\n")
+    
+    print(f"Starting test JSON server on port {PORT}")
+    print(f"Your laptop IP: (check with 'ipconfig' or 'ifconfig')")
+    print(f"Pi should connect to: http://YOUR_LAPTOP_IP:8000/positions.json")
     
     server = HTTPServer((HOST, PORT), JSONHandler)
     try:
