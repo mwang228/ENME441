@@ -2,8 +2,9 @@
 """
 ENME441 Laser Turret - COMPETITION READY
 FIXED VERSION: 
-1. Fixed atexit GPIO error
-2. Added target attribute display
+1. Fixed altitude motor auto-return
+2. No confirmation - fires immediately
+3. Shows target location details
 """
 
 import RPi.GPIO as GPIO
@@ -34,7 +35,6 @@ class CompetitionTurret:
         self.MAX_AZIMUTH_RIGHT = 120    # degrees (positive = right)
         
         # Starting orientation: laser points to CENTER of ring
-        # This means when turret is at home (0,0), laser points inward
         
         # Position tracking
         self.azimuth_angle = 0.0    # Current angle in degrees (0 = home)
@@ -175,6 +175,7 @@ class CompetitionTurret:
         # Update altitude angle
         self.altitude_angle = self.altitude_position * 360 / self.ALTITUDE_STEPS_PER_REV
         self.update_motors()
+        return True
     
     def move_motors_sync(self, az_steps, alt_steps, delay=0.001):
         """
@@ -196,7 +197,8 @@ class CompetitionTurret:
             total_time = az_steps_abs * az_delay
             
             if alt_steps_abs > 0:
-                alt_delay = total_time / alt_steps_abs
+                # Altitude moves faster, so needs shorter delay
+                alt_delay = total_time / alt_steps_abs / self.ALTITUDE_SPEED_FACTOR
             else:
                 alt_delay = delay
         else:
@@ -222,7 +224,7 @@ class CompetitionTurret:
                 last_az_time = current_time
                 az_counter += 1
             
-            # Move altitude if ready (faster timing)
+            # Move altitude if ready
             if alt_counter < alt_steps_abs and (current_time - last_alt_time) >= alt_delay:
                 self.step_altitude_fast(alt_dir)
                 last_alt_time = current_time
@@ -282,8 +284,12 @@ class CompetitionTurret:
     def go_to_home(self):
         """Return to home position"""
         print("Returning to home position...")
+        
+        # Calculate steps needed to return to home
         az_steps_needed = self.home_azimuth_position - self.azimuth_position
         alt_steps_needed = self.home_altitude_position - self.altitude_position
+        
+        print(f"Moving: Az={az_steps_needed} steps, Alt={alt_steps_needed} steps")
         
         success = self.move_motors_sync(az_steps_needed, alt_steps_needed, 0.001)
         
@@ -393,10 +399,6 @@ class CompetitionTurret:
         our_r = self.my_position['r']
         our_theta = self.my_position['theta']
         
-        # Since our laser points to CENTER at home (0°),
-        # we need to calculate the angle from our position to target
-        # relative to the direction to center
-        
         # Convert everything to Cartesian for easier calculation
         our_x = our_r * math.cos(our_theta)
         our_y = our_r * math.sin(our_theta)
@@ -415,7 +417,6 @@ class CompetitionTurret:
         center_dy = -our_y
         
         # Calculate angle between "to-center" vector and "to-target" vector
-        # This gives us azimuth relative to center-pointing direction
         dot_product = center_dx * dx + center_dy * dy
         cross_product = center_dx * dy - center_dy * dx
         
@@ -508,7 +509,7 @@ class CompetitionTurret:
         return closest_target
     
     def fire_at_closest_target(self):
-        """Find, aim at, and fire at closest target with detailed target info"""
+        """Find, aim at, and fire at closest target - NO CONFIRMATION"""
         print("\n" + "="*60)
         print("FINDING CLOSEST TARGET")
         print("="*60)
@@ -518,6 +519,7 @@ class CompetitionTurret:
             print("No valid targets found (all hit or out of range)")
             return False
         
+        # Display target location details
         print(f"Target found: {target['type'].upper()} {target['id']}")
         print(f"Target attributes:")
         print(f"  • Type: {target['type']}")
@@ -529,13 +531,7 @@ class CompetitionTurret:
         print(f"Current position: Az={self.azimuth_angle:.1f}°, Alt={self.altitude_angle:.1f}°")
         print(f"Movement needed: ΔAz={target['azimuth']-self.azimuth_angle:.1f}°, ΔAlt={target['altitude']-self.altitude_angle:.1f}°")
         
-        # Ask for confirmation before moving
-        confirm = input("\nFire at this target? (y/n): ").strip().lower()
-        if confirm != 'y':
-            print("Targeting cancelled.")
-            return False
-        
-        # Move to target
+        # Move to target IMMEDIATELY (no confirmation)
         print(f"\nMoving to target...")
         success = self.move_motors_degrees_sync(
             target['azimuth'] - self.azimuth_angle,
@@ -689,7 +685,7 @@ def main():
     print("  • Motor limits: ±120° from home")
     print("  • Auto-return to home on exit (FIXED)")
     print("  • Motor test: ±90° rotations")
-    print("  • Detailed target attribute display")
+    print("  • Immediate target firing with location display")
     print("="*70)
     
     turret = None
@@ -703,7 +699,7 @@ def main():
             print("1. Calibrate Home Position (Laser points to CENTER)")
             print("2. Set Team Number & Fetch Competition Data")
             print("3. Motor Test (90° rotations)")
-            print("4. Find & Fire at Closest Target (with target details)")
+            print("4. Find & Fire at Closest Target (fires immediately)")
             print("5. Test Fire Laser (1 second)")
             print("6. Return to Home Position")
             print("7. Show Current Status")
