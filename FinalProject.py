@@ -8,6 +8,8 @@ Features:
 4. Motor limits (±120° azimuth)
 5. Targeting closest target with laser firing
 6. Starting orientation: laser points to ring center
+7. Auto-return to home on exit
+8. Motor test limited to ±90°
 """
 
 import RPi.GPIO as GPIO
@@ -16,6 +18,7 @@ import json
 import requests
 import math
 import sys
+import atexit
 
 class CompetitionTurret:
     def __init__(self):
@@ -48,6 +51,14 @@ class CompetitionTurret:
         self.azimuth_phase = 0
         self.altitude_phase = 0
         
+        # Store original/home position for auto-return
+        self.home_azimuth_angle = 0.0
+        self.home_altitude_angle = 0.0
+        self.home_azimuth_position = 0
+        self.home_altitude_position = 0
+        self.home_azimuth_phase = 0
+        self.home_altitude_phase = 0
+        
         # Target tracking
         self.competition_data = None
         self.my_position = None
@@ -75,6 +86,9 @@ class CompetitionTurret:
         self.running = True
         
         self.setup_gpio()
+        
+        # Register auto-return function to run on exit
+        atexit.register(self.auto_return_to_home)
     
     def setup_gpio(self):
         """Initialize all GPIO pins"""
@@ -244,27 +258,71 @@ class CompetitionTurret:
         self.altitude_position = 0
         self.azimuth_phase = 0
         self.altitude_phase = 0
+        
+        # Store as home position for auto-return
+        self.home_azimuth_angle = self.azimuth_angle
+        self.home_altitude_angle = self.altitude_angle
+        self.home_azimuth_position = self.azimuth_position
+        self.home_altitude_position = self.altitude_position
+        self.home_azimuth_phase = self.azimuth_phase
+        self.home_altitude_phase = self.altitude_phase
+        
         self.update_motors()
         
         print("✓ Home position calibrated!")
         print(f"  Azimuth: 0°, Altitude: 0°")
         print(f"  Limits: {self.MAX_AZIMUTH_LEFT}° (left) to {self.MAX_AZIMUTH_RIGHT}° (right)")
+        print(f"  Auto-return to this position on exit")
     
     def go_to_home(self):
         """Return to home position"""
         print("Returning to home position...")
-        az_steps_needed = -self.azimuth_position
-        alt_steps_needed = -self.altitude_position
+        az_steps_needed = self.home_azimuth_position - self.azimuth_position
+        alt_steps_needed = self.home_altitude_position - self.altitude_position
         
-        self.move_motors_sync(az_steps_needed, alt_steps_needed, 0.001)
-        self.azimuth_angle = 0.0
-        self.altitude_angle = 0.0
-        self.azimuth_position = 0
-        self.altitude_position = 0
-        self.azimuth_phase = 0
-        self.altitude_phase = 0
+        success = self.move_motors_sync(az_steps_needed, alt_steps_needed, 0.001)
         
-        print("✓ At home position (pointing to ring center)")
+        if success:
+            self.azimuth_angle = self.home_azimuth_angle
+            self.altitude_angle = self.home_altitude_angle
+            self.azimuth_position = self.home_azimuth_position
+            self.altitude_position = self.home_altitude_position
+            self.azimuth_phase = self.home_azimuth_phase
+            self.altitude_phase = self.home_altitude_phase
+            print("✓ At home position (pointing to ring center)")
+        else:
+            print("⚠ Could not return to home (motor limits?)")
+    
+    def auto_return_to_home(self):
+        """Automatically return to home position (called on exit)"""
+        print("\nAuto-returning to home position...")
+        
+        # Calculate steps needed to return to home
+        az_steps_needed = self.home_azimuth_position - self.azimuth_position
+        alt_steps_needed = self.home_altitude_position - self.altitude_position
+        
+        # Only move if we're not already at home
+        if az_steps_needed != 0 or alt_steps_needed != 0:
+            print(f"Moving: Az={az_steps_needed} steps, Alt={alt_steps_needed} steps")
+            
+            # Move back slowly for safety
+            self.move_motors_sync(az_steps_needed, alt_steps_needed, 0.002)
+            
+            # Update position to home
+            self.azimuth_angle = self.home_azimuth_angle
+            self.altitude_angle = self.home_altitude_angle
+            self.azimuth_position = self.home_azimuth_position
+            self.altitude_position = self.home_altitude_position
+            self.azimuth_phase = self.home_azimuth_phase
+            self.altitude_phase = self.home_altitude_phase
+            
+            print("✓ Returned to home position")
+        else:
+            print("✓ Already at home position")
+        
+        # Turn off motors and laser
+        self.shift_out(0b00000000)
+        self.laser_off()
     
     # ========== JSON READING & TARGETING ==========
     
@@ -285,12 +343,6 @@ class CompetitionTurret:
                     print(f"✓ Success! Team {self.team_number} position:")
                     print(f"  r = {self.my_position['r']} cm")
                     print(f"  θ = {self.my_position['theta']} rad ({math.degrees(self.my_position['theta']):.1f}°)")
-                    
-                    # IMPORTANT: Since laser points to center at home (0°),
-                    # we need to adjust targeting calculations
-                    # Our forward direction (0°) points to ring center (r=0)
-                    # But our position is at (r=300, θ=some angle)
-                    # So when we aim "forward" (0°), we're actually aiming toward center
                     
                     return True
                 else:
@@ -480,48 +532,63 @@ class CompetitionTurret:
         
         return True
     
-    # ========== MOTOR TEST ==========
+    # ========== MOTOR TEST (90° VERSION) ==========
     
-    def motor_test_180(self):
-        """Test motors with 180° rotations"""
+    def motor_test_90(self):
+        """Test motors with 90° rotations (changed from 180°)"""
         print("\n" + "="*60)
-        print("MOTOR TEST: 180° rotations")
+        print("MOTOR TEST: 90° rotations")
         print("="*60)
         print("Starting from current position...")
         print(f"Current: Az={self.azimuth_angle:.1f}°, Alt={self.altitude_angle:.1f}°")
         
+        test_cycles = 0
+        max_cycles = 3  # Limit number of test cycles
+        
         try:
-            while self.running:
-                # Check if we can move 180° to the right
-                if self.azimuth_angle + 180 <= self.MAX_AZIMUTH_RIGHT:
-                    print("\n1. 180° to the right")
-                    success = self.move_motors_degrees_sync(180, 0, 0.0005)
+            while self.running and test_cycles < max_cycles:
+                test_cycles += 1
+                print(f"\n--- Test Cycle {test_cycles} ---")
+                
+                # Check if we can move 90° to the right
+                if self.azimuth_angle + 90 <= self.MAX_AZIMUTH_RIGHT:
+                    print("1. 90° to the right")
+                    success = self.move_motors_degrees_sync(90, 0, 0.0005)
                     if not success:
                         print("⚠ Hit motor limit")
                         break
                     print("Pausing 2 seconds...")
                     time.sleep(2)
                 else:
-                    print(f"⚠ Cannot move 180° right (would exceed {self.MAX_AZIMUTH_RIGHT}° limit)")
+                    print(f"⚠ Cannot move 90° right (would exceed {self.MAX_AZIMUTH_RIGHT}° limit)")
                     break
                 
-                # Check if we can move 180° to the left (back to start)
-                if self.azimuth_angle - 180 >= self.MAX_AZIMUTH_LEFT:
-                    print("\n2. 180° to the left (back to start)")
-                    success = self.move_motors_degrees_sync(-180, 0, 0.0005)
+                # Check if we can move 90° to the left (back to start)
+                if self.azimuth_angle - 90 >= self.MAX_AZIMUTH_LEFT:
+                    print("2. 90° to the left (back to start)")
+                    success = self.move_motors_degrees_sync(-90, 0, 0.0005)
                     if not success:
                         print("⚠ Hit motor limit")
                         break
                     print("Pausing 2 seconds...")
                     time.sleep(2)
                 else:
-                    print(f"⚠ Cannot move 180° left (would exceed {self.MAX_AZIMUTH_LEFT}° limit)")
+                    print(f"⚠ Cannot move 90° left (would exceed {self.MAX_AZIMUTH_LEFT}° limit)")
                     break
+                
+                # Optional: Add some altitude movement
+                print("3. Small altitude test")
+                success = self.move_motors_degrees_sync(0, 30, 0.0005)
+                if success:
+                    time.sleep(1)
+                    self.move_motors_degrees_sync(0, -30, 0.0005)
+                    time.sleep(1)
                 
         except KeyboardInterrupt:
             print("\nTest stopped by user")
         finally:
             self.running = False
+            print(f"\nMotor test completed ({test_cycles} cycle(s))")
     
     # ========== LASER CONTROL ==========
     
@@ -552,6 +619,7 @@ class CompetitionTurret:
         print("="*60)
         print(f"Team: {self.team_number if self.team_number else 'Not set'}")
         print(f"Position: Azimuth={self.azimuth_angle:.1f}°, Altitude={self.altitude_angle:.1f}°")
+        print(f"Home position: Azimuth={self.home_azimuth_angle:.1f}°, Altitude={self.home_altitude_angle:.1f}°")
         print(f"Motor limits: {self.MAX_AZIMUTH_LEFT}° (left) to {self.MAX_AZIMUTH_RIGHT}° (right)")
         print(f"Targets hit: {len(self.targets_hit)}")
         
@@ -561,22 +629,29 @@ class CompetitionTurret:
             print(f"Remaining targets: {total_targets - len(self.targets_hit)}")
     
     def cleanup(self):
-        """Clean shutdown"""
+        """Clean shutdown - will auto-return to home via atexit"""
         self.running = False
-        print("\nCleaning up...")
-        self.go_to_home()
-        self.shift_out(0b00000000)  # Turn off motors
-        self.laser_off()
+        print("\nInitiating cleanup...")
+        # Note: auto_return_to_home() will be called automatically by atexit
+        # This ensures it runs even if program crashes or is force-quit
+    
+    def force_cleanup(self):
+        """Force cleanup without atexit (for manual calls)"""
+        print("\nForce cleanup initiated...")
+        self.auto_return_to_home()
         GPIO.cleanup()
-        print("Cleanup complete. All motors off, laser OFF.")
+        print("GPIO cleanup complete.")
 
 def main():
     """Main program"""
     print("="*70)
     print("ENME441 LASER TURRET - COMPETITION SYSTEM")
     print("="*70)
-    print("Starting orientation: Laser points to RING CENTER at home position")
-    print(f"Motor limits: ±120° from home")
+    print("Features:")
+    print("  • Laser points to RING CENTER at home position")
+    print("  • Motor limits: ±120° from home")
+    print("  • Auto-return to home on exit")
+    print("  • Motor test: ±90° rotations")
     print("="*70)
     
     turret = None
@@ -589,14 +664,15 @@ def main():
             print("="*70)
             print("1. Calibrate Home Position (Laser points to CENTER)")
             print("2. Set Team Number & Fetch Competition Data")
-            print("3. Motor Test (180° rotations)")
+            print("3. Motor Test (90° rotations)")  # Changed from 180° to 90°
             print("4. Find & Fire at Closest Target")
             print("5. Test Fire Laser (1 second)")
             print("6. Return to Home Position")
             print("7. Show Current Status")
-            print("8. Exit")
+            print("8. Force Cleanup & Exit")
+            print("9. Exit (Auto-return to home)")
             
-            choice = input("\nEnter choice (1-8): ").strip()
+            choice = input("\nEnter choice (1-9): ").strip()
             
             if choice == "1":
                 turret.calibrate_home()
@@ -614,7 +690,7 @@ def main():
                         turret.print_status()
             elif choice == "3":
                 turret.running = True
-                turret.motor_test_180()
+                turret.motor_test_90()  # Changed to 90° test
             elif choice == "4":
                 if not turret.team_number or not turret.competition_data:
                     print("Please set team number and fetch competition data first (Option 2)")
@@ -627,7 +703,12 @@ def main():
             elif choice == "7":
                 turret.print_status()
             elif choice == "8":
+                print("Force cleanup...")
+                turret.force_cleanup()
                 print("Exiting...")
+                break
+            elif choice == "9":
+                print("Exiting with auto-return to home...")
                 break
             else:
                 print("Invalid choice")
@@ -635,15 +716,24 @@ def main():
             turret.running = False
             
     except KeyboardInterrupt:
-        print("\nProgram interrupted")
+        print("\nProgram interrupted - Auto-returning to home...")
     except Exception as e:
         print(f"\nError: {e}")
+        print("Auto-returning to home...")
         import traceback
         traceback.print_exc()
     finally:
+        # The atexit handler will automatically call auto_return_to_home()
+        # Even if we get here due to an exception
         if turret:
-            turret.cleanup()
-        print("\nProgram ended")
+            # Ensure GPIO cleanup happens
+            try:
+                turret.shift_out(0b00000000)
+                turret.laser_off()
+                GPIO.cleanup()
+            except:
+                pass
+        print("\nProgram ended.")
 
 if __name__ == "__main__":
     # Check for required packages
