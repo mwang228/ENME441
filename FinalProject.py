@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ENME441 Laser Turret - COMPETITION READY
-Fixed: Altitude motor adjustment and target selection
+Fixed: No altitude limits, proper azimuth orientation
 """
 
 import RPi.GPIO as GPIO
@@ -26,16 +26,19 @@ class CompetitionTurret:
         self.ALTITUDE_STEPS_PER_REV = 4096   # Standard motor
         self.ALTITUDE_SPEED_FACTOR = 4       # Moves 4× faster to match azimuth
         
-        # Motor limits (±120° from home)
-        self.MAX_AZIMUTH_LEFT = -120    # degrees (negative = left)
-        self.MAX_AZIMUTH_RIGHT = 120    # degrees (positive = right)
+        # IMPORTANT: Azimuth orientation
+        # At home position (0°), laser points to CENTER of arena (positive x direction)
+        # Can rotate ±120° from this center-pointing direction
+        self.MAX_AZIMUTH_LEFT = -120    # degrees (negative = left from center)
+        self.MAX_AZIMUTH_RIGHT = 120    # degrees (positive = right from center)
+        # NO LIMITS ON ALTITUDE MOTOR
         
         # Mechanical offsets (mm)
         self.LASER_HEIGHT = 43.0
         self.LASER_OFFSET = 23.5
         
         # Position tracking
-        self.azimuth_angle = 0.0    # Current azimuth angle (0 = +x direction)
+        self.azimuth_angle = 0.0    # Current azimuth angle (0 = pointing to center)
         self.altitude_angle = 0.0   # Current altitude angle (0 = horizontal)
         self.azimuth_position = 0   # Steps from home
         self.altitude_position = 0  # Steps from home
@@ -137,11 +140,12 @@ class CompetitionTurret:
         """Take one azimuth step, check limits"""
         new_angle = self.azimuth_angle + (1.0 * direction * 360 / self.AZIMUTH_STEPS_PER_REV)
         
+        # Check azimuth limits (±120° from center-pointing direction)
         if new_angle < self.MAX_AZIMUTH_LEFT:
-            print(f"⚠ Azimuth limit reached: {new_angle:.1f}° < {self.MAX_AZIMUTH_LEFT}°")
+            print(f"⚠ Azimuth limit reached: {new_angle:.1f}° < {self.MAX_AZIMUTH_LEFT}° (left limit)")
             return False
         if new_angle > self.MAX_AZIMUTH_RIGHT:
-            print(f"⚠ Azimuth limit reached: {new_angle:.1f}° > {self.MAX_AZIMUTH_RIGHT}°")
+            print(f"⚠ Azimuth limit reached: {new_angle:.1f}° > {self.MAX_AZIMUTH_RIGHT}° (right limit)")
             return False
         
         if direction == 1:
@@ -156,7 +160,7 @@ class CompetitionTurret:
         return True
     
     def step_altitude_fast(self, direction):
-        """Take altitude steps (4× faster to match azimuth)"""
+        """Take altitude steps (4× faster to match azimuth) - NO LIMITS"""
         steps = self.ALTITUDE_SPEED_FACTOR
         for _ in range(steps):
             if direction == 1:
@@ -218,7 +222,7 @@ class CompetitionTurret:
                 az_counter += 1
             
             if alt_counter < alt_steps_abs and (current_time - last_alt_time) >= alt_delay:
-                self.step_altitude_fast(alt_dir)
+                self.step_altitude_fast(alt_dir)  # NO ALTITUDE LIMITS
                 last_alt_time = current_time
                 alt_counter += self.ALTITUDE_SPEED_FACTOR
             
@@ -263,17 +267,18 @@ class CompetitionTurret:
             print("Laser fired.")
     
     def manual_adjust_motors(self):
-        """Manually set motor angles - FIXED ALTITUDE ISSUE"""
+        """Manually set motor angles - NO ALTITUDE LIMITS"""
         print("\n" + "="*60)
         print("MANUAL MOTOR ADJUSTMENT")
         print("="*60)
         
         print(f"Current position: Azimuth={self.azimuth_angle:.1f}°, Altitude={self.altitude_angle:.1f}°")
-        print(f"Azimuth limits: {self.MAX_AZIMUTH_LEFT}° to {self.MAX_AZIMUTH_RIGHT}°")
+        print(f"Azimuth limits: {self.MAX_AZIMUTH_LEFT}° to {self.MAX_AZIMUTH_RIGHT}° (center-pointing = 0°)")
+        print("Altitude: NO LIMITS")
         
         try:
             # Get azimuth input
-            az_input = input(f"\nEnter azimuth angle (-120 to 120, current={self.azimuth_angle:.1f}): ").strip()
+            az_input = input(f"\nEnter azimuth angle ({self.MAX_AZIMUTH_LEFT} to {self.MAX_AZIMUTH_RIGHT}, current={self.azimuth_angle:.1f}): ").strip()
             if az_input:
                 new_az = float(az_input)
                 if new_az < self.MAX_AZIMUTH_LEFT or new_az > self.MAX_AZIMUTH_RIGHT:
@@ -282,7 +287,7 @@ class CompetitionTurret:
             else:
                 new_az = self.azimuth_angle
             
-            # Get altitude input - NO RANGE LIMITS FOR ALTITUDE
+            # Get altitude input - NO LIMITS
             alt_input = input(f"Enter altitude angle (current={self.altitude_angle:.1f}): ").strip()
             if alt_input:
                 new_alt = float(alt_input)
@@ -302,7 +307,7 @@ class CompetitionTurret:
             if success:
                 print(f"✓ Motors moved to: Azimuth={self.azimuth_angle:.1f}°, Altitude={self.altitude_angle:.1f}°")
             else:
-                print("⚠ Could not move to position (motor limits?)")
+                print("⚠ Could not move to position (azimuth limits?)")
                 
         except ValueError:
             print("Invalid input. Please enter numeric values.")
@@ -313,10 +318,11 @@ class CompetitionTurret:
         print("MOTOR CALIBRATION")
         print("="*60)
         
-        print("Instructions:")
-        print("1. Manually align the laser to point to the CENTER of competition ring")
-        print("2. Ensure laser height is 43 mm above ground")
-        print("3. Make sure laser offset is 23.5 mm from azimuth shaft")
+        print("IMPORTANT: Align turret so that:")
+        print("1. Laser points to CENTER of competition ring (positive x direction)")
+        print("2. This is your 'forward' direction (0°)")
+        print("3. Laser height is 43 mm above ground")
+        print("4. Laser offset is 23.5 mm from azimuth shaft")
         print("\nPress Enter when aligned...")
         input()
         
@@ -337,7 +343,8 @@ class CompetitionTurret:
         self.update_motors()
         
         print("✓ Calibration complete!")
-        print(f"Home position set to: Azimuth=0°, Altitude=0°")
+        print(f"Home position set to: Azimuth=0° (pointing to center), Altitude=0° (horizontal)")
+        print(f"Azimuth range: {self.MAX_AZIMUTH_LEFT}° (left) to {self.MAX_AZIMUTH_RIGHT}° (right) from center")
     
     def json_file_reading(self):
         """Read JSON file and set team number"""
@@ -399,6 +406,7 @@ class CompetitionTurret:
     def calculate_target_angles(self, target_r, target_theta, target_z=0):
         """
         Calculate aiming angles for a target
+        Home position (0°,0°): Laser points to CENTER of arena (positive x direction)
         Returns: (azimuth_angle, altitude_angle) in degrees
         """
         if not self.my_position:
@@ -410,28 +418,51 @@ class CompetitionTurret:
         target_r_m = target_r / 100.0
         target_z_m = target_z / 100.0
         
+        # Convert to Cartesian
         our_x = our_r * math.cos(our_theta)
         our_y = our_r * math.sin(our_theta)
         
         target_x = target_r_m * math.cos(target_theta)
         target_y = target_r_m * math.sin(target_theta)
         
+        # Vector from us to target
         dx = target_x - our_x
         dy = target_y - our_y
         dz = target_z_m
         
-        distance_2d = math.sqrt(dx*dx + dy*dy)
+        # Vector from us to CENTER (0,0) - this is our "forward" direction
+        center_dx = -our_x  # From us to (0,0)
+        center_dy = -our_y
         
-        if distance_2d > 0:
-            center_dir_rad = our_theta + math.pi
-            azimuth_rad = math.atan2(dy, dx) - center_dir_rad
-            altitude_rad = math.atan2(dz, distance_2d)
+        # Calculate angle between "to-center" vector and "to-target" vector
+        # This gives azimuth relative to center-pointing direction
+        dot_product = center_dx * dx + center_dy * dy
+        cross_product = center_dx * dy - center_dy * dx
+        
+        distance_to_center = math.sqrt(center_dx**2 + center_dy**2)
+        distance_to_target = math.sqrt(dx**2 + dy**2)
+        
+        if distance_to_center > 0 and distance_to_target > 0:
+            cos_angle = dot_product / (distance_to_center * distance_to_target)
+            cos_angle = max(-1.0, min(1.0, cos_angle))
+            
+            angle_rad = math.acos(cos_angle)
+            
+            # Determine sign using cross product (for left/right)
+            if cross_product < 0:
+                angle_rad = -angle_rad
+            
+            azimuth_deg = math.degrees(angle_rad)
         else:
-            azimuth_rad = 0
-            altitude_rad = math.radians(90) if dz > 0 else math.radians(-90)
+            azimuth_deg = 0
         
-        azimuth_deg = math.degrees(azimuth_rad)
-        altitude_deg = math.degrees(altitude_rad)
+        # Calculate altitude angle
+        distance_2d = math.sqrt(dx*dx + dy*dy)
+        if distance_2d > 0:
+            altitude_rad = math.atan2(dz, distance_2d)
+            altitude_deg = math.degrees(altitude_rad)
+        else:
+            altitude_deg = 90 if dz > 0 else -90
         
         # Simple offset correction
         if distance_2d > 0:
@@ -441,7 +472,7 @@ class CompetitionTurret:
         return (azimuth_deg, altitude_deg)
     
     def find_next_target(self):
-        """Find next target that hasn't been hit yet - FIXED TARGET SELECTION"""
+        """Find next target that hasn't been hit yet"""
         if not self.competition_data:
             print("No competition data loaded.")
             return None
@@ -456,9 +487,8 @@ class CompetitionTurret:
                 if target_id not in self.targets_hit:
                     az, alt = self.calculate_target_angles(pos['r'], pos['theta'])
                     
-                    # NO RANGE CHECK - fire at any target within azimuth limits
-                    new_azimuth = self.azimuth_angle + (az - self.azimuth_angle)
-                    if (self.MAX_AZIMUTH_LEFT <= new_azimuth <= self.MAX_AZIMUTH_RIGHT):
+                    # Check if within azimuth limits (±120° from center)
+                    if self.MAX_AZIMUTH_LEFT <= az <= self.MAX_AZIMUTH_RIGHT:
                         valid_targets.append({
                             'type': 'turret',
                             'id': team,
@@ -476,9 +506,8 @@ class CompetitionTurret:
             if target_id not in self.targets_hit:
                 az, alt = self.calculate_target_angles(globe['r'], globe['theta'], globe['z'])
                 
-                # NO RANGE CHECK - fire at any target within azimuth limits
-                new_azimuth = self.azimuth_angle + (az - self.azimuth_angle)
-                if (self.MAX_AZIMUTH_LEFT <= new_azimuth <= self.MAX_AZIMUTH_RIGHT):
+                # Check if within azimuth limits (±120° from center)
+                if self.MAX_AZIMUTH_LEFT <= az <= self.MAX_AZIMUTH_RIGHT:
                     valid_targets.append({
                         'type': 'globe',
                         'id': i,
@@ -491,15 +520,30 @@ class CompetitionTurret:
                     })
         
         if not valid_targets:
+            # DEBUG: Show why no targets found
+            print(f"\nDEBUG: Current azimuth: {self.azimuth_angle:.1f}°")
+            print(f"DEBUG: Azimuth limits: {self.MAX_AZIMUTH_LEFT}° to {self.MAX_AZIMUTH_RIGHT}°")
+            
+            # List all targets and their calculated angles
+            print("\nDEBUG: All targets and their calculated azimuth angles:")
+            for team, pos in self.competition_data["turrets"].items():
+                if team != self.team_number:
+                    az, alt = self.calculate_target_angles(pos['r'], pos['theta'])
+                    print(f"  Turret {team}: az={az:.1f}°, alt={alt:.1f}°")
+            
+            for i, globe in enumerate(self.competition_data["globes"]):
+                az, alt = self.calculate_target_angles(globe['r'], globe['theta'], globe['z'])
+                print(f"  Globe {i}: az={az:.1f}°, alt={alt:.1f}°")
+            
             return None
         
-        # Sort by priority (turrets first) and then by angular distance
+        # Sort by priority (turrets first) and then by angular distance from current position
         valid_targets.sort(key=lambda x: (x['priority'], abs(x['azimuth'] - self.azimuth_angle)))
         
-        return valid_targets[0]  # Return closest target by priority/angle
+        return valid_targets[0]
     
     def initiate_firing_sequence(self):
-        """Fire at ALL targets in sequence - FIXED TO CONTINUE FIRING"""
+        """Fire at ALL targets in sequence"""
         print("\n" + "="*60)
         print("INITIATING FIRING SEQUENCE")
         print("="*60)
@@ -536,7 +580,7 @@ class CompetitionTurret:
             while True:
                 target = self.find_next_target()
                 if not target:
-                    print("\nNo more targets found within azimuth limits!")
+                    print("\nNo more targets found within azimuth limits (±120° from center)")
                     break
                 
                 print(f"\n--- Target {targets_fired + 1} ---")
@@ -558,7 +602,7 @@ class CompetitionTurret:
                 )
                 
                 if not success:
-                    print("⚠ Could not move to target (motor limits?)")
+                    print("⚠ Could not move to target (azimuth limits?)")
                     # Mark as hit anyway to avoid getting stuck
                     target_id = f"{target['type']}_{target['id']}"
                     self.targets_hit.add(target_id)
@@ -631,7 +675,7 @@ class CompetitionTurret:
         self.altitude_position = self.home_altitude_position
         self.azimuth_phase = self.home_azimuth_phase
         self.altitude_phase = self.home_altitude_phase
-        print("✓ At home position")
+        print("✓ At home position (pointing to center)")
     
     def auto_return_to_home(self):
         """Automatically return to home position (called on exit)"""
