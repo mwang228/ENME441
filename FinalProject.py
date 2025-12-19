@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-ENME441 LASER TURRET - FIXED MOTOR CONTROL VERSION
-Consistent bit assignments for both motors
+ENME441 LASER TURRET - FINAL COMPETITION VERSION
+Updated with your working motor calibrations and limits
 """
 
 import RPi.GPIO as GPIO
@@ -11,8 +11,9 @@ import requests
 import math
 import sys
 import atexit
+from typing import Dict, List, Tuple, Optional
 
-class FixedTurret:
+class CompetitionTurret:
     def __init__(self):
         # ========== COMPETITION CONFIGURATION ==========
         self.SERVER_IP = "192.168.1.254"  # ENME441 WiFi router IP
@@ -24,67 +25,81 @@ class FixedTurret:
         # Team number (will be asked later)
         self.team_number = None
         
-        # Motor calibration - USING YOUR VALUES
-        self.AZIMUTH_STEPS_PER_REV = 1024    # Fast motor
-        self.ALTITUDE_STEPS_PER_REV = 4096   # Standard motor
+        # ========== YOUR WORKING MOTOR CALIBRATIONS ==========
+        # Based on your testing:
+        self.AZIMUTH_STEPS_PER_REV = 2200      # Azimuth motor (works well!)
+        self.ALTITUDE_STEPS_PER_REV = 450      # Altitude motor (double movement fixed)
         
-        # IMPORTANT: Azimuth orientation
-        self.MAX_AZIMUTH_LEFT = -120    # degrees (negative = left from center)
-        self.MAX_AZIMUTH_RIGHT = 120    # degrees (positive = right from center)
+        # ========== YOUR MEASURED PHYSICAL LIMITS ==========
+        # Azimuth: Full range (works perfectly)
+        self.MAX_AZIMUTH_LEFT = -180      # degrees (negative = left)
+        self.MAX_AZIMUTH_RIGHT = 180      # degrees (positive = right)
         
-        # Mechanical offsets (mm)
-        self.LASER_HEIGHT = 43.0
-        self.LASER_OFFSET = 23.5
+        # Altitude: YOUR MEASURED LIMITS (-60° to +45°)
+        # IMPORTANT: Negative angles = laser UP, Positive angles = laser DOWN
+        self.MAX_ALTITUDE_UP = -60.0      # Maximum UP angle (negative)
+        self.MAX_ALTITUDE_DOWN = 45.0     # Maximum DOWN angle (positive)
         
-        # Position tracking
-        self.azimuth_angle = 0.0    # Current azimuth angle (0 = pointing to center)
-        self.altitude_angle = 0.0   # Current altitude angle (0 = horizontal)
-        self.azimuth_position = 0   # Steps from home
-        self.altitude_position = 0  # Steps from home
+        # Competition field parameters
+        self.FIELD_RADIUS = 300.0         # cm (3 meters)
         
-        # Store original/home position
+        # ========== POSITION TRACKING ==========
+        self.azimuth_angle = 0.0          # Current azimuth (0 = pointing forward)
+        self.altitude_angle = 0.0         # Current altitude (0 = horizontal)
+        self.azimuth_position = 0         # Steps from home
+        self.altitude_position = 0        # Steps from home
+        
+        # Home position (set during calibration)
         self.home_azimuth_angle = 0.0
         self.home_altitude_angle = 0.0
         self.home_azimuth_position = 0
         self.home_altitude_position = 0
         
-        # Target tracking
+        # ========== COMPETITION DATA ==========
         self.competition_data = None
-        self.my_position = None
+        self.my_position = None           # (r, theta) in cm and radians
         self.targets_hit = set()
         
-        # GPIO pins
+        # ========== GPIO CONFIGURATION ==========
         self.SHIFT_CLK = 11  # GPIO11 -> SH_CP (Pin 11)
         self.LATCH_CLK = 10  # GPIO10 -> ST_CP (Pin 12)
         self.DATA_PIN = 9    # GPIO9  -> DS (Pin 14)
         self.LASER_PIN = 26  # GPIO26 (HIGH = ON, LOW = OFF)
         
-        # FIXED: Consistent bit assignments
-        # Azimuth motor: Bits 0-3 (pins 15, 1, 2, 3)
-        # Altitude motor: Bits 4-7 (pins 4, 5, 6, 7)
-        self.AZIMUTH_BITS = 0b00001111
-        self.ALTITUDE_BITS = 0b11110000
+        # Motor bit assignments (confirmed working)
+        self.AZIMUTH_BITS = 0b00001111    # Bits 0-3: Azimuth motor
+        self.ALTITUDE_BITS = 0b11110000   # Bits 4-7: Altitude motor
         
-        # Step sequence for 4-wire bipolar stepper
+        # ========== OPTIMIZED STEP SEQUENCE ==========
+        # Using 2-phase excitation for more torque
         self.STEP_SEQUENCE = [
-            0b00010001,  # Step 0: Az=0001, Alt=0001
-            0b00100010,  # Step 1: Az=0010, Alt=0010  
-            0b01000100,  # Step 2: Az=0100, Alt=0100
-            0b10001000,  # Step 3: Az=1000, Alt=1000
+            0b00010001,  # Az: coil A, Alt: coil A
+            0b00100010,  # Az: coil B, Alt: coil B  
+            0b01000100,  # Az: coil C, Alt: coil C
+            0b10001000,  # Az: coil D, Alt: coil D
         ]
         
         # Current step indices
         self.azimuth_step_idx = 0
         self.altitude_step_idx = 0
         
-        # State
+        # State tracking
         self.laser_state = False
         self.gpio_initialized = False
         
+        # Initialize
         self.setup_gpio()
         
         # Register auto-return function
         atexit.register(self.auto_return_to_home)
+        
+        print("="*70)
+        print("ENME441 COMPETITION TURRET - READY")
+        print("="*70)
+        print(f"Azimuth: {self.AZIMUTH_STEPS_PER_REV} steps/rev (Full range)")
+        print(f"Altitude: {self.ALTITUDE_STEPS_PER_REV} steps/rev")
+        print(f"Altitude limits: UP={self.MAX_ALTITUDE_UP}°, DOWN={self.MAX_ALTITUDE_DOWN}°")
+        print("="*70)
     
     def setup_gpio(self):
         """Initialize all GPIO pins"""
@@ -92,6 +107,7 @@ class FixedTurret:
             return
             
         GPIO.setmode(GPIO.BCM)
+        GPIO.setwarnings(False)  # Reduce warning noise
         
         # Shift register pins
         GPIO.setup(self.SHIFT_CLK, GPIO.OUT)
@@ -102,10 +118,13 @@ class FixedTurret:
         GPIO.setup(self.LASER_PIN, GPIO.OUT)
         GPIO.output(self.LASER_PIN, GPIO.LOW)
         
-        # Initialize
+        # Initialize pins
         GPIO.output(self.SHIFT_CLK, GPIO.LOW)
         GPIO.output(self.LATCH_CLK, GPIO.LOW)
         GPIO.output(self.DATA_PIN, GPIO.LOW)
+        
+        # Turn off all motors initially
+        self.shift_out(0b00000000)
         
         self.gpio_initialized = True
         print("✓ GPIO initialized - Motors OFF, Laser OFF")
@@ -115,20 +134,21 @@ class FixedTurret:
         if not self.gpio_initialized:
             self.setup_gpio()
     
-    # ========== FIXED MOTOR CONTROL ==========
+    # ========== MOTOR CONTROL FUNCTIONS ==========
     
     def shift_out(self, data_byte):
-        """Send 8 bits to shift register"""
+        """Send 8 bits to shift register with optimized timing"""
         self.ensure_gpio()
         GPIO.output(self.LATCH_CLK, GPIO.LOW)
         for i in range(7, -1, -1):
             bit = (data_byte >> i) & 0x01
             GPIO.output(self.DATA_PIN, bit)
             GPIO.output(self.SHIFT_CLK, GPIO.HIGH)
-            time.sleep(0.00001)
+            # Minimal delay for reliability
+            time.sleep(0.000001)
             GPIO.output(self.SHIFT_CLK, GPIO.LOW)
         GPIO.output(self.LATCH_CLK, GPIO.HIGH)
-        time.sleep(0.00001)
+        time.sleep(0.000001)
         GPIO.output(self.LATCH_CLK, GPIO.LOW)
     
     def update_motors(self):
@@ -138,23 +158,23 @@ class FixedTurret:
         self.shift_out(combined)
     
     def step_azimuth(self, direction):
-        """Take one azimuth step"""
+        """Take one azimuth step with boundary checking"""
         self.azimuth_step_idx = (self.azimuth_step_idx + direction) % 4
         self.azimuth_position += direction
         self.azimuth_angle = self.azimuth_position * 360.0 / self.AZIMUTH_STEPS_PER_REV
         self.update_motors()
     
     def step_altitude(self, direction):
-        """Take one altitude step"""
+        """Take one altitude step with boundary checking"""
         self.altitude_step_idx = (self.altitude_step_idx + direction) % 4
         self.altitude_position += direction
         self.altitude_angle = self.altitude_position * 360.0 / self.ALTITUDE_STEPS_PER_REV
         self.update_motors()
     
-    def move_motors_direct(self, az_steps, alt_steps, step_delay=0.001):
+    def move_motors_direct(self, az_steps: int, alt_steps: int, step_delay: float = 0.001) -> bool:
         """
-        Direct motor movement - most reliable
-        Returns True if successful
+        Direct motor movement with boundary checking
+        Returns True if successful, False if limits reached
         """
         if az_steps == 0 and alt_steps == 0:
             return True
@@ -165,19 +185,18 @@ class FixedTurret:
         az_steps_abs = abs(az_steps)
         alt_steps_abs = abs(alt_steps)
         
-        # Move both motors
         az_completed = 0
         alt_completed = 0
         
         while az_completed < az_steps_abs or alt_completed < alt_steps_abs:
-            current_time = time.time()
-            
             # Move azimuth if needed
             if az_completed < az_steps_abs:
-                # Check limits for azimuth
-                new_angle = self.azimuth_angle + (az_direction * 360.0 / self.AZIMUTH_STEPS_PER_REV)
-                if new_angle < self.MAX_AZIMUTH_LEFT or new_angle > self.MAX_AZIMUTH_RIGHT:
-                    print(f"⚠ Azimuth limit reached: {new_angle:.1f}°")
+                # Calculate new angle after step
+                new_az_angle = self.azimuth_angle + (az_direction * 360.0 / self.AZIMUTH_STEPS_PER_REV)
+                
+                # Check azimuth limits
+                if new_az_angle < self.MAX_AZIMUTH_LEFT or new_az_angle > self.MAX_AZIMUTH_RIGHT:
+                    print(f"⚠ Azimuth limit reached: {new_az_angle:.1f}°")
                     return False
                 
                 self.step_azimuth(az_direction)
@@ -185,6 +204,14 @@ class FixedTurret:
             
             # Move altitude if needed
             if alt_completed < alt_steps_abs:
+                # Calculate new angle after step
+                new_alt_angle = self.altitude_angle + (alt_direction * 360.0 / self.ALTITUDE_STEPS_PER_REV)
+                
+                # Check altitude limits (YOUR MEASURED LIMITS)
+                if new_alt_angle < self.MAX_ALTITUDE_UP or new_alt_angle > self.MAX_ALTITUDE_DOWN:
+                    print(f"⚠ Altitude limit reached: {new_alt_angle:.1f}°")
+                    return False
+                
                 self.step_altitude(alt_direction)
                 alt_completed += 1
             
@@ -192,13 +219,29 @@ class FixedTurret:
         
         return True
     
-    def move_motors_degrees(self, az_degrees, alt_degrees, step_delay=0.001):
-        """Move by degrees"""
-        az_steps = int(az_degrees * self.AZIMUTH_STEPS_PER_REV / 360)
-        alt_steps = int(alt_degrees * self.ALTITUDE_STEPS_PER_REV / 360)
+    def move_motors_degrees(self, az_degrees: float, alt_degrees: float, step_delay: float = 0.001) -> bool:
+        """Move by degrees with boundary checking"""
+        az_steps = int(az_degrees * self.AZIMUTH_STEPS_PER_REV / 360.0)
+        alt_steps = int(alt_degrees * self.ALTITUDE_STEPS_PER_REV / 360.0)
         
-        print(f"Moving: Az={az_degrees:.1f}° ({az_steps} steps), Alt={alt_degrees:.1f}° ({alt_steps} steps)")
-        return self.move_motors_direct(az_steps, alt_steps, step_delay)
+        print(f"Moving: Az={az_degrees:+.1f}° ({az_steps:+d} steps), Alt={alt_degrees:+.1f}° ({alt_steps:+d} steps)")
+        
+        if az_degrees != 0 or alt_degrees != 0:
+            success = self.move_motors_direct(az_steps, alt_steps, step_delay)
+            if success:
+                print(f"✓ New position: Az={self.azimuth_angle:+.1f}°, Alt={self.altitude_angle:+.1f}°")
+            return success
+        return True
+    
+    def move_to_angle(self, target_az: float, target_alt: float, step_delay: float = 0.001) -> bool:
+        """Move to specific angles"""
+        az_move = target_az - self.azimuth_angle
+        alt_move = target_alt - self.altitude_angle
+        
+        print(f"Moving to: Az={target_az:.1f}°, Alt={target_alt:.1f}°")
+        print(f"Movement needed: ΔAz={az_move:.1f}°, ΔAlt={alt_move:.1f}°")
+        
+        return self.move_motors_degrees(az_move, alt_move, step_delay)
     
     # ========== MANUAL CONTROLS ==========
     
@@ -208,136 +251,142 @@ class FixedTurret:
         print("MANUAL LASER CONTROL")
         print("="*60)
         
-        print(f"Current laser state: {'ON' if self.laser_state else 'OFF'}")
-        print("\nOptions:")
-        print("1. Turn laser ON")
-        print("2. Turn laser OFF")
-        print("3. Test fire (3 seconds)")
-        print("4. Back to main menu")
-        
-        choice = input("\nEnter choice (1-4): ").strip()
-        
-        if choice == "1":
-            self.laser_on()
-            print("Laser turned ON")
-        elif choice == "2":
-            self.laser_off()
-            print("Laser turned OFF")
-        elif choice == "3":
-            print(f"Firing laser for {self.FIRING_DURATION} seconds...")
-            self.laser_on()
-            time.sleep(self.FIRING_DURATION)
-            self.laser_off()
-            print("Laser fired.")
+        while True:
+            print(f"\nCurrent laser: {'ON 🔴' if self.laser_state else 'OFF ⚫'}")
+            print(f"Position: Az={self.azimuth_angle:+.1f}°, Alt={self.altitude_angle:+.1f}°")
+            
+            print("\nOptions:")
+            print("1. Turn laser ON")
+            print("2. Turn laser OFF")
+            print("3. Test fire (3 seconds - competition duration)")
+            print("4. Return to menu")
+            
+            choice = input("\nEnter choice (1-4): ").strip()
+            
+            if choice == "1":
+                self.laser_on()
+            elif choice == "2":
+                self.laser_off()
+            elif choice == "3":
+                print(f"\nFIRING LASER for {self.FIRING_DURATION} seconds...")
+                self.laser_on()
+                time.sleep(self.FIRING_DURATION)
+                self.laser_off()
+                print("✓ Laser fired")
+            elif choice == "4":
+                break
+            else:
+                print("Invalid choice")
     
-    def manual_adjust_motors_fixed(self):
-        """FIXED: Manual motor adjustment with better controls"""
+    def manual_adjust_motors(self):
+        """Manual motor adjustment with safety limits"""
         print("\n" + "="*60)
-        print("MANUAL MOTOR ADJUSTMENT - FIXED")
+        print("MANUAL MOTOR ADJUSTMENT")
         print("="*60)
         
-        print(f"Current position: Azimuth={self.azimuth_angle:.1f}°, Altitude={self.altitude_angle:.1f}°")
-        print(f"Azimuth limits: {self.MAX_AZIMUTH_LEFT}° to {self.MAX_AZIMUTH_RIGHT}°")
-        print("\nOptions:")
-        print("1. Set exact angles")
-        print("2. Move relative amounts")
-        print("3. Test individual motors")
-        print("4. Back to menu")
-        
-        choice = input("\nEnter choice (1-4): ").strip()
-        
-        if choice == "1":
-            # Set exact angles
-            try:
-                az_input = input(f"Enter azimuth angle ({self.MAX_AZIMUTH_LEFT} to {self.MAX_AZIMUTH_RIGHT}, current={self.azimuth_angle:.1f}): ").strip()
-                alt_input = input(f"Enter altitude angle (current={self.altitude_angle:.1f}): ").strip()
-                
-                if az_input:
-                    new_az = float(az_input)
-                    if new_az < self.MAX_AZIMUTH_LEFT or new_az > self.MAX_AZIMUTH_RIGHT:
+        while True:
+            print(f"\nCurrent position:")
+            print(f"  Azimuth: {self.azimuth_angle:+.1f}° (limits: {self.MAX_AZIMUTH_LEFT}° to {self.MAX_AZIMUTH_RIGHT}°)")
+            print(f"  Altitude: {self.altitude_angle:+.1f}° (limits: {self.MAX_ALTITUDE_UP}° UP to {self.MAX_ALTITUDE_DOWN}° DOWN)")
+            
+            print("\nOptions:")
+            print("1. Set exact angles")
+            print("2. Move relative amounts")
+            print("3. Test movement within limits")
+            print("4. Return to menu")
+            
+            choice = input("\nEnter choice (1-4): ").strip()
+            
+            if choice == "1":
+                # Set exact angles
+                try:
+                    az_input = input(f"Enter azimuth angle [{self.MAX_AZIMUTH_LEFT} to {self.MAX_AZIMUTH_RIGHT}]: ").strip()
+                    alt_input = input(f"Enter altitude angle [{self.MAX_ALTITUDE_UP} to {self.MAX_ALTITUDE_DOWN}]: ").strip()
+                    
+                    if not az_input or not alt_input:
+                        print("Both angles required")
+                        continue
+                    
+                    target_az = float(az_input)
+                    target_alt = float(alt_input)
+                    
+                    # Validate inputs
+                    if target_az < self.MAX_AZIMUTH_LEFT or target_az > self.MAX_AZIMUTH_RIGHT:
                         print(f"Azimuth must be between {self.MAX_AZIMUTH_LEFT}° and {self.MAX_AZIMUTH_RIGHT}°")
-                        return
-                else:
-                    new_az = self.azimuth_angle
-                
-                if alt_input:
-                    new_alt = float(alt_input)
-                else:
-                    new_alt = self.altitude_angle
-                
-                az_move = new_az - self.azimuth_angle
-                alt_move = new_alt - self.altitude_angle
-                
-                print(f"\nMoving: ΔAz={az_move:.1f}°, ΔAlt={alt_move:.1f}°")
-                success = self.move_motors_degrees(az_move, alt_move, 0.001)
-                
-                if success:
-                    print(f"✓ Moved to: Az={self.azimuth_angle:.1f}°, Alt={self.altitude_angle:.1f}°")
-                else:
-                    print("⚠ Movement failed (azimuth limits?)")
+                        continue
                     
-            except ValueError:
-                print("Invalid input. Please enter numbers.")
-        
-        elif choice == "2":
-            # Move relative amounts
-            try:
-                az_move = float(input("Enter azimuth change (degrees): ").strip())
-                alt_move = float(input("Enter altitude change (degrees): ").strip())
-                
-                print(f"\nMoving: ΔAz={az_move:.1f}°, ΔAlt={alt_move:.1f}°")
-                success = self.move_motors_degrees(az_move, alt_move, 0.001)
-                
-                if success:
-                    print(f"✓ New position: Az={self.azimuth_angle:.1f}°, Alt={self.altitude_angle:.1f}°")
-                else:
-                    print("⚠ Movement failed (azimuth limits?)")
+                    if target_alt < self.MAX_ALTITUDE_UP or target_alt > self.MAX_ALTITUDE_DOWN:
+                        print(f"Altitude must be between {self.MAX_ALTITUDE_UP}° and {self.MAX_ALTITUDE_DOWN}°")
+                        continue
                     
-            except ValueError:
-                print("Invalid input. Please enter numbers.")
-        
-        elif choice == "3":
-            # Test individual motors
-            print("\nTesting individual motors:")
-            print("1. Test azimuth motor (+30°, -30°)")
-            print("2. Test altitude motor (+30°, -30°)")
+                    self.move_to_angle(target_az, target_alt, 0.001)
+                    
+                except ValueError:
+                    print("Invalid input. Please enter numbers.")
             
-            test_choice = input("Enter choice (1-2): ").strip()
+            elif choice == "2":
+                # Move relative amounts
+                try:
+                    az_move = float(input("Azimuth change (degrees): ").strip())
+                    alt_move = float(input("Altitude change (degrees): ").strip())
+                    
+                    # Check if movement would exceed limits
+                    new_az = self.azimuth_angle + az_move
+                    new_alt = self.altitude_angle + alt_move
+                    
+                    if new_az < self.MAX_AZIMUTH_LEFT or new_az > self.MAX_AZIMUTH_RIGHT:
+                        print(f"Azimuth would exceed limits: {new_az:.1f}°")
+                        continue
+                    
+                    if new_alt < self.MAX_ALTITUDE_UP or new_alt > self.MAX_ALTITUDE_DOWN:
+                        print(f"Altitude would exceed limits: {new_alt:.1f}°")
+                        continue
+                    
+                    self.move_motors_degrees(az_move, alt_move, 0.001)
+                    
+                except ValueError:
+                    print("Invalid input. Please enter numbers.")
             
-            if test_choice == "1":
-                print("Testing azimuth motor...")
-                print("Moving +30°...")
-                if self.move_motors_degrees(30, 0, 0.001):
-                    time.sleep(1)
-                    print("Moving -30°...")
-                    self.move_motors_degrees(-30, 0, 0.001)
-                    print("✓ Azimuth test complete")
+            elif choice == "3":
+                # Test movement within limits
+                print("\nTesting movement within your limits:")
+                print("1. Move to maximum UP position")
+                print("2. Move to maximum DOWN position")
+                print("3. Move to center")
+                
+                test_choice = input("Enter choice (1-3): ").strip()
+                
+                if test_choice == "1":
+                    print(f"Moving to maximum UP ({self.MAX_ALTITUDE_UP}°)...")
+                    self.move_to_angle(0, self.MAX_ALTITUDE_UP, 0.001)
+                elif test_choice == "2":
+                    print(f"Moving to maximum DOWN ({self.MAX_ALTITUDE_DOWN}°)...")
+                    self.move_to_angle(0, self.MAX_ALTITUDE_DOWN, 0.001)
+                elif test_choice == "3":
+                    print("Moving to center (0°, 0°)...")
+                    self.move_to_angle(0, 0, 0.001)
                 else:
-                    print("⚠ Azimuth test failed")
+                    print("Invalid choice")
             
-            elif test_choice == "2":
-                print("Testing altitude motor...")
-                print("Moving +30°...")
-                if self.move_motors_degrees(0, 30, 0.001):
-                    time.sleep(1)
-                    print("Moving -30°...")
-                    self.move_motors_degrees(0, -30, 0.001)
-                    print("✓ Altitude test complete")
-                else:
-                    print("⚠ Altitude test failed")
+            elif choice == "4":
+                break
+            else:
+                print("Invalid choice")
     
     def motor_calibration(self):
-        """Manually set motors to starting point"""
+        """Set home position for competition"""
         print("\n" + "="*60)
-        print("MOTOR CALIBRATION")
+        print("COMPETITION CALIBRATION")
         print("="*60)
         
-        print("IMPORTANT: Align turret so that:")
-        print("1. Laser points to CENTER of competition ring")
-        print("2. This is your 'forward' direction (0°)")
+        print("IMPORTANT: For competition, align your turret so that:")
+        print("1. Laser points to the FIELD CENTER (marked origin)")
+        print("2. This is your 'forward' direction (0°, 0°)")
+        print("3. Make sure turret is at its assigned (r, θ) position")
         print("\nPress Enter when aligned...")
         input()
         
+        # Reset all positions
         self.azimuth_angle = 0.0
         self.altitude_angle = 0.0
         self.azimuth_position = 0
@@ -345,35 +394,39 @@ class FixedTurret:
         self.azimuth_step_idx = 0
         self.altitude_step_idx = 0
         
+        # Set as home position
         self.home_azimuth_angle = self.azimuth_angle
         self.home_altitude_angle = self.altitude_angle
         self.home_azimuth_position = self.azimuth_position
         self.home_altitude_position = self.altitude_position
         
+        # Update motors to new position
         self.update_motors()
         
         print("✓ Calibration complete!")
-        print(f"Home position: Azimuth=0°, Altitude=0°")
+        print(f"Home position set: Azimuth=0°, Altitude=0°")
+        print("Your turret is now ready for competition")
     
-    def json_file_reading(self):
-        """Read JSON file and set team number"""
+    def fetch_competition_data(self):
+        """Fetch competition data from server"""
         print("\n" + "="*60)
-        print("JSON FILE READING")
+        print("FETCH COMPETITION DATA")
         print("="*60)
         
         if self.team_number:
             print(f"Current team: {self.team_number}")
-            change = input("Change team? (y/n): ").strip().lower()
-            if change != 'y':
+            change = input("Change team number? (y/n): ").strip().lower()
+            if change == 'y':
+                self.team_number = None
+        
+        if not self.team_number:
+            team = input("Enter your team number (from competition sheet): ").strip()
+            if not team:
+                print("Team number required")
                 return
+            self.team_number = team
         
-        team = input("Enter your team number: ").strip()
-        if not team:
-            print("No team number entered.")
-            return
-        
-        self.team_number = team
-        print(f"\nFetching competition data for Team {team}...")
+        print(f"\nFetching competition data for Team {self.team_number}...")
         print(f"Server: {self.SERVER_URL}")
         
         try:
@@ -381,87 +434,228 @@ class FixedTurret:
             if response.status_code == 200:
                 self.competition_data = response.json()
                 
-                if self.team_number in self.competition_data["turrets"]:
+                # Find our position
+                if self.team_number in self.competition_data.get("turrets", {}):
                     self.my_position = self.competition_data["turrets"][self.team_number]
+                    
+                    # Convert to cartesian for calculations
+                    r = self.my_position['r']  # cm
+                    theta = self.my_position['theta']  # radians
+                    
+                    self.my_cartesian = (
+                        r * math.cos(theta),  # x
+                        r * math.sin(theta),  # y
+                        0  # z (on ground)
+                    )
+                    
                     print(f"✓ Success! Team {self.team_number} position:")
-                    print(f"  r = {self.my_position['r']} cm")
-                    print(f"  θ = {self.my_position['theta']} rad ({math.degrees(self.my_position['theta']):.1f}°)")
+                    print(f"  Polar: r={r} cm, θ={theta:.3f} rad ({math.degrees(theta):.1f}°)")
+                    print(f"  Cartesian: x={self.my_cartesian[0]:.1f} cm, y={self.my_cartesian[1]:.1f} cm")
+                    
+                    # Count targets
+                    turret_count = len(self.competition_data.get("turrets", {}))
+                    globe_count = len(self.competition_data.get("globes", []))
+                    print(f"\nCompetition info:")
+                    print(f"  Turrets: {turret_count} teams")
+                    print(f"  Globes: {globe_count} passive targets")
                     
                 else:
-                    print(f"✗ Team {self.team_number} not found")
+                    print(f"✗ Team {self.team_number} not found in competition data")
                     self.competition_data = None
                     self.my_position = None
             else:
                 print(f"✗ Server error: HTTP {response.status_code}")
                 
         except requests.exceptions.ConnectionError:
-            print(f"✗ Cannot connect to server")
+            print(f"✗ Cannot connect to server. Check WiFi connection.")
+            print(f"  Make sure you're connected to ENME441 WiFi")
         except Exception as e:
             print(f"✗ Error: {e}")
     
-    def motor_diagnostic(self):
-        """Run motor diagnostic test"""
-        print("\n" + "="*60)
-        print("MOTOR DIAGNOSTIC TEST")
-        print("="*60)
-        print("Testing both motors with simple movements")
+    def calculate_target_angles(self, target_x: float, target_y: float, target_z: float) -> Tuple[float, float]:
+        """
+        Calculate azimuth and altitude angles to hit a target
+        Returns: (azimuth_angle, altitude_angle) in degrees
+        """
+        # Our position
+        our_x, our_y, our_z = self.my_cartesian
         
-        print("\n1. Testing azimuth motor (+45°, -45°)")
-        input("Press Enter to start...")
+        # Calculate relative position
+        dx = target_x - our_x
+        dy = target_y - our_y
+        dz = target_z - our_z
         
-        print("Moving +45°...")
-        if self.move_motors_degrees(45, 0, 0.001):
-            print("Pausing 1 second...")
-            time.sleep(1)
-            print("Moving -45°...")
-            self.move_motors_degrees(-45, 0, 0.001)
-            print("✓ Azimuth test complete")
+        # Calculate horizontal distance
+        horizontal_dist = math.sqrt(dx*dx + dy*dy)
+        
+        # Calculate azimuth (0° = pointing to field center)
+        # Note: math.atan2 returns angle from positive x-axis
+        # We need to adjust based on our coordinate system
+        azimuth_rad = math.atan2(dy, dx)
+        
+        # Adjust azimuth based on our position
+        # If we're at angle θ from center, adjust accordingly
+        if hasattr(self, 'my_position'):
+            our_theta = self.my_position['theta']
+            azimuth_rad = azimuth_rad - our_theta
+        
+        azimuth_deg = math.degrees(azimuth_rad)
+        
+        # Calculate altitude (0° = horizontal)
+        # Negative altitude = aim UP, Positive altitude = aim DOWN
+        if horizontal_dist > 0:
+            altitude_rad = math.atan2(dz, horizontal_dist)
+            altitude_deg = math.degrees(altitude_rad)
         else:
-            print("⚠ Azimuth test failed")
+            altitude_deg = 90.0 if dz > 0 else -90.0
         
-        print("\n2. Testing altitude motor (+45°, -45°)")
-        input("Press Enter to start...")
-        
-        print("Moving +45°...")
-        if self.move_motors_degrees(0, 45, 0.001):
-            print("Pausing 1 second...")
-            time.sleep(1)
-            print("Moving -45°...")
-            self.move_motors_degrees(0, -45, 0.001)
-            print("✓ Altitude test complete")
-        else:
-            print("⚠ Altitude test failed")
-        
-        print("\n3. Testing both motors together (+30°, -30°)")
-        input("Press Enter to start...")
-        
-        print("Moving both +30°...")
-        if self.move_motors_degrees(30, 30, 0.001):
-            print("Pausing 1 second...")
-            time.sleep(1)
-            print("Moving both -30°...")
-            self.move_motors_degrees(-30, -30, 0.001)
-            print("✓ Both motors test complete")
-        else:
-            print("⚠ Both motors test failed")
-        
-        print("\n✓ Diagnostic complete")
+        return azimuth_deg, altitude_deg
     
-    def initiate_firing_sequence(self):
-        """Fire at targets in sequence"""
+    def automated_firing_sequence(self):
+        """Automated firing at all targets"""
         print("\n" + "="*60)
-        print("FIRING SEQUENCE")
-        print("="*60)
-        print("Note: This requires competition data")
-        print("Run JSON file reading first (Option 4)")
+        print("AUTOMATED FIRING SEQUENCE")
         print("="*60)
         
         if not self.team_number or not self.competition_data:
-            print("Please set team number and fetch competition data first")
+            print("Please fetch competition data first (Option 4)")
             return
         
-        print("Firing sequence would run here")
-        print("(Implementation depends on competition setup)")
+        print(f"Team {self.team_number} - Starting automated firing...")
+        print(f"Your position: r={self.my_position['r']} cm, θ={math.degrees(self.my_position['theta']):.1f}°")
+        
+        # Get all targets
+        all_targets = []
+        
+        # Other turrets (opponents)
+        for team_id, pos in self.competition_data.get("turrets", {}).items():
+            if team_id != self.team_number:  # Don't shoot ourselves!
+                r = pos['r']
+                theta = pos['theta']
+                x = r * math.cos(theta)
+                y = r * math.sin(theta)
+                z = 0  # Turrets are on ground
+                all_targets.append((f"Turret {team_id}", x, y, z))
+        
+        # Globes (passive targets)
+        for i, globe in enumerate(self.competition_data.get("globes", [])):
+            r = globe['r']
+            theta = globe['theta']
+            z = globe['z']
+            x = r * math.cos(theta)
+            y = r * math.sin(theta)
+            all_targets.append((f"Globe {i+1}", x, y, z))
+        
+        print(f"Found {len(all_targets)} targets")
+        
+        # Ask for confirmation
+        print("\nThis will:")
+        print("1. Move to each target")
+        print(f"2. Fire laser for {self.FIRING_DURATION} seconds")
+        print("3. Keep track of hits")
+        
+        confirm = input("\nStart automated firing? (y/n): ").strip().lower()
+        if confirm != 'y':
+            print("Cancelled")
+            return
+        
+        print("\n" + "="*60)
+        print("STARTING AUTOMATED FIRING")
+        print("="*60)
+        
+        self.targets_hit.clear()
+        total_targets = len(all_targets)
+        
+        for i, (target_name, x, y, z) in enumerate(all_targets):
+            print(f"\n[{i+1}/{total_targets}] Targeting: {target_name}")
+            print(f"  Position: x={x:.1f} cm, y={y:.1f} cm, z={z:.1f} cm")
+            
+            # Calculate angles
+            azimuth_deg, altitude_deg = self.calculate_target_angles(x, y, z)
+            
+            print(f"  Required angles: Az={azimuth_deg:+.1f}°, Alt={altitude_deg:+.1f}°")
+            
+            # Check if target is within our limits
+            if altitude_deg < self.MAX_ALTITUDE_UP or altitude_deg > self.MAX_ALTITUDE_DOWN:
+                print(f"  ⚠ Target outside altitude range ({altitude_deg:.1f}°)")
+                print(f"  Skipping {target_name}")
+                continue
+            
+            # Move to target
+            print(f"  Moving to target...")
+            success = self.move_to_angle(azimuth_deg, altitude_deg, 0.001)
+            
+            if not success:
+                print(f"  ⚠ Could not reach target (motor limits)")
+                continue
+            
+            # Fire laser
+            print(f"  FIRING LASER for {self.FIRING_DURATION} seconds...")
+            self.laser_on()
+            time.sleep(self.FIRING_DURATION)
+            self.laser_off()
+            
+            # Record hit
+            self.targets_hit.add(target_name)
+            print(f"  ✓ Hit {target_name}")
+            
+            # Brief pause between targets
+            if i < total_targets - 1:
+                time.sleep(1)
+        
+        # Return to home
+        print(f"\nReturning to home position...")
+        self.move_to_angle(0, 0, 0.001)
+        
+        print("\n" + "="*60)
+        print("FIRING SEQUENCE COMPLETE")
+        print("="*60)
+        print(f"Targets hit: {len(self.targets_hit)}/{total_targets}")
+        if self.targets_hit:
+            print("Hit list:")
+            for target in sorted(self.targets_hit):
+                print(f"  • {target}")
+        
+        # Calculate estimated score
+        turret_hits = len([t for t in self.targets_hit if t.startswith("Turret")])
+        globe_hits = len([t for t in self.targets_hit if t.startswith("Globe")])
+        
+        print(f"\nEstimated score: +{2 * len(self.targets_hit)} points")
+        print(f"  Turrets hit: {turret_hits} (+{2 * turret_hits} points)")
+        print(f"  Globes hit: {globe_hits} (+{2 * globe_hits} points)")
+    
+    def test_within_limits(self):
+        """Test movement within your measured limits"""
+        print("\n" + "="*60)
+        print("TEST WITHIN YOUR LIMITS")
+        print("="*60)
+        
+        print("Testing your measured working range:")
+        print(f"Altitude: {self.MAX_ALTITUDE_UP}° UP to {self.MAX_ALTITUDE_DOWN}° DOWN")
+        print(f"Azimuth: Full range available")
+        
+        test_points = [
+            ("Center", 0, 0),
+            ("Max UP", 0, self.MAX_ALTITUDE_UP),
+            ("Max DOWN", 0, self.MAX_ALTITUDE_DOWN),
+            ("Right 45°, Mid altitude", 45, (self.MAX_ALTITUDE_UP + self.MAX_ALTITUDE_DOWN)/2),
+            ("Left 45°, Mid altitude", -45, (self.MAX_ALTITUDE_UP + self.MAX_ALTITUDE_DOWN)/2),
+        ]
+        
+        for name, az, alt in test_points:
+            print(f"\nTesting: {name} (Az={az:+.1f}°, Alt={alt:+.1f}°)")
+            
+            success = self.move_to_angle(az, alt, 0.001)
+            if success:
+                print(f"  ✓ Reached target")
+            else:
+                print(f"  ✗ Could not reach")
+            
+            time.sleep(1)
+        
+        # Return to center
+        self.move_to_angle(0, 0, 0.001)
+        print("\n✓ Limit test complete")
     
     # ========== UTILITY FUNCTIONS ==========
     
@@ -470,24 +664,19 @@ class FixedTurret:
         self.ensure_gpio()
         GPIO.output(self.LASER_PIN, GPIO.HIGH)
         self.laser_state = True
-        print("LASER: ON")
+        print("LASER: ON 🔴")
     
     def laser_off(self):
         """Turn laser OFF"""
         self.ensure_gpio()
         GPIO.output(self.LASER_PIN, GPIO.LOW)
         self.laser_state = False
-        print("LASER: OFF")
+        print("LASER: OFF ⚫")
     
     def go_to_home(self):
         """Return to home position"""
-        print("Returning to home position...")
-        
-        # Calculate steps needed
-        az_steps_needed = self.home_azimuth_position - self.azimuth_position
-        alt_steps_needed = self.home_altitude_position - self.altitude_position
-        
-        self.move_motors_direct(az_steps_needed, alt_steps_needed, 0.001)
+        print("Returning to home position (0°, 0°)...")
+        self.move_to_angle(0, 0, 0.001)
         print("✓ At home position")
     
     def auto_return_to_home(self):
@@ -498,15 +687,24 @@ class FixedTurret:
             if not self.gpio_initialized:
                 self.setup_gpio()
             
+            # Turn off laser
+            self.laser_off()
+            
+            # Return to home
             self.go_to_home()
+            
+            # Turn off motors
+            self.shift_out(0b00000000)
+            
             print("✓ Returned to home position")
                 
         except Exception as e:
             print(f"⚠ Error during auto-return: {e}")
         
         try:
-            self.shift_out(0b00000000)
-            self.laser_off()
+            if self.gpio_initialized:
+                GPIO.cleanup()
+                self.gpio_initialized = False
         except:
             pass
     
@@ -514,80 +712,21 @@ class FixedTurret:
         """Force cleanup"""
         print("\nCleanup initiated...")
         self.auto_return_to_home()
-        if self.gpio_initialized:
-            GPIO.cleanup()
-            self.gpio_initialized = False
-        print("GPIO cleanup complete.")
+        print("✓ Cleanup complete")
 
 def main():
     """Main program"""
     print("="*70)
-    print("ENME441 LASER TURRET - FIXED MOTOR CONTROL")
+    print("ENME441 COMPETITION LASER TURRET")
     print("="*70)
-    print("Features:")
-    print("  • Fixed motor bit assignments")
-    print("  • Better manual controls")
-    print("  • Motor diagnostic test")
-    print("  • Consistent step calculations")
+    print("FINAL VERSION - READY FOR COMPETITION")
+    print("")
+    print("YOUR CONFIGURATION:")
+    print("• Azimuth: 2200 steps/rev (Full range)")
+    print("• Altitude: 450 steps/rev")
+    print(f"• Altitude limits: -60° UP to +45° DOWN")
     print("="*70)
     
-    turret = None
-    try:
-        turret = FixedTurret()
-        
-        while True:
-            print("\n" + "="*70)
-            print("MAIN MENU")
-            print("="*70)
-            print("1. Manual toggle the laser")
-            print("2. Manual adjust motors (FIXED)")
-            print("3. Motor calibration")
-            print("4. JSON file reading")
-            print("5. Motor diagnostic test")
-            print("6. Initiate firing sequence")
-            print("7. Return to home position")
-            print("8. Force cleanup & exit")
-            print("9. Exit (Auto-return to home)")
-            
-            choice = input("\nEnter choice (1-9): ").strip()
-            
-            if choice == "1":
-                turret.manual_toggle_laser()
-            elif choice == "2":
-                turret.manual_adjust_motors_fixed()
-            elif choice == "3":
-                turret.motor_calibration()
-            elif choice == "4":
-                turret.json_file_reading()
-            elif choice == "5":
-                turret.motor_diagnostic()
-            elif choice == "6":
-                turret.initiate_firing_sequence()
-            elif choice == "7":
-                turret.go_to_home()
-            elif choice == "8":
-                print("Force cleanup...")
-                turret.cleanup()
-                print("Exiting...")
-                break
-            elif choice == "9":
-                print("Exiting with auto-return to home...")
-                break
-            else:
-                print("Invalid choice")
-            
-    except KeyboardInterrupt:
-        print("\nProgram interrupted")
-    except Exception as e:
-        print(f"\nError: {e}")
-        import traceback
-        traceback.print_exc()
-    finally:
-        if turret:
-            turret.cleanup()
-        print("\nProgram ended.")
-
-if __name__ == "__main__":
     # Check for required packages
     try:
         import requests
@@ -597,4 +736,65 @@ if __name__ == "__main__":
         subprocess.check_call([sys.executable, "-m", "pip", "install", "requests"])
         import requests
     
+    turret = None
+    try:
+        turret = CompetitionTurret()
+        
+        while True:
+            print("\n" + "="*70)
+            print("COMPETITION CONTROL PANEL")
+            print("="*70)
+            print("PRE-COMPETITION:")
+            print("1. Manual laser control")
+            print("2. Manual motor adjustment (with limits)")
+            print("3. Competition calibration (SET HOME POSITION)")
+            print("4. Fetch competition data (REQUIRED)")
+            print("5. Test within your limits")
+            print("")
+            print("COMPETITION:")
+            print("6. Automated firing sequence (MAIN EVENT)")
+            print("7. Return to home position")
+            print("")
+            print("SYSTEM:")
+            print("8. Cleanup & exit")
+            print("="*70)
+            
+            choice = input("\nEnter choice (1-8): ").strip()
+            
+            if choice == "1":
+                turret.manual_toggle_laser()
+            elif choice == "2":
+                turret.manual_adjust_motors()
+            elif choice == "3":
+                turret.motor_calibration()
+            elif choice == "4":
+                turret.fetch_competition_data()
+            elif choice == "5":
+                turret.test_within_limits()
+            elif choice == "6":
+                turret.automated_firing_sequence()
+            elif choice == "7":
+                turret.go_to_home()
+            elif choice == "8":
+                print("\nCleaning up...")
+                turret.cleanup()
+                print("Exiting. Good luck in the competition!")
+                break
+            else:
+                print("Invalid choice")
+            
+    except KeyboardInterrupt:
+        print("\n\nProgram interrupted by user")
+        if turret:
+            turret.cleanup()
+    except Exception as e:
+        print(f"\nError: {e}")
+        import traceback
+        traceback.print_exc()
+        if turret:
+            turret.cleanup()
+    
+    print("\nProgram ended.")
+
+if __name__ == "__main__":
     main()
