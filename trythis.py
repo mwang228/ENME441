@@ -1,18 +1,16 @@
 #!/usr/bin/env python3
 """
-ENME441 Laser Turret - Manual Motor Control (Feature 2)
-Basic implementation - starting fresh
+ENME441 Laser Turret - Fixed Motor Control
+Corrected step sequence and motor handling
 """
 
 import RPi.GPIO as GPIO
 import time
 
-class BasicTurret:
+class FixedTurret:
     def __init__(self):
         print("="*70)
-        print("ENME441 LASER TURRET - BASIC MANUAL CONTROL")
-        print("="*70)
-        print("Feature 2: Manual control of motor angles")
+        print("ENME441 LASER TURRET - FIXED MOTOR CONTROL")
         print("="*70)
         
         # GPIO Pins for Shift Register
@@ -24,9 +22,10 @@ class BasicTurret:
         # Azimuth Motor (horizontal): Pins 15(Q0), 1(Q1), 2(Q2), 3(Q3)
         # Altitude Motor (vertical):  Pins 4(Q4), 5(Q5), 6(Q6), 7(Q7)
         
-        # Motor Specifications (to be determined through testing)
-        self.AZIMUTH_STEPS_PER_REV = 200     # Common stepper value - we'll adjust
-        self.ALTITUDE_STEPS_PER_REV = 200    # Same assumption for now
+        # CORRECTED: Typical bipolar stepper values
+        # Try 400 if motors have half-stepping, 200 if full-step
+        self.AZIMUTH_STEPS_PER_REV = 400    # Try 200 or 400
+        self.ALTITUDE_STEPS_PER_REV = 400   # Try 200 or 400
         
         # Current positions (in steps)
         self.azimuth_steps = 0
@@ -36,13 +35,20 @@ class BasicTurret:
         self.azimuth_angle = 0.0   # 0 = pointing forward
         self.altitude_angle = 0.0  # 0 = horizontal
         
-        # Step sequence for 4-wire bipolar stepper
-        # Each step energizes two coils for more torque
-        self.STEP_SEQUENCE = [
-            0b00010001,  # Az: coil A, Alt: coil A
-            0b00100010,  # Az: coil B, Alt: coil B  
-            0b01000100,  # Az: coil C, Alt: coil C
-            0b10001000,  # Az: coil D, Alt: coil D
+        # CORRECTED: Separate step sequences for each motor
+        # Standard 4-step sequence for bipolar stepper (wave drive)
+        self.AZIMUTH_SEQUENCE = [
+            0b00000001,  # Q0 (Pin 15) - Azimuth coil A
+            0b00000010,  # Q1 (Pin 1)  - Azimuth coil B
+            0b00000100,  # Q2 (Pin 2)  - Azimuth coil C
+            0b00001000,  # Q3 (Pin 3)  - Azimuth coil D
+        ]
+        
+        self.ALTITUDE_SEQUENCE = [
+            0b00010000,  # Q4 (Pin 4)  - Altitude coil A
+            0b00100000,  # Q5 (Pin 5)  - Altitude coil B
+            0b01000000,  # Q6 (Pin 6)  - Altitude coil C
+            0b10000000,  # Q7 (Pin 7)  - Altitude coil D
         ]
         
         # Current step in sequence
@@ -81,15 +87,6 @@ class BasicTurret:
     def send_to_shift_register(self, data):
         """
         Send 8 bits to the 74HC595 shift register
-        Bit mapping:
-          Bit 0 (LSB): Azimuth coil A (Pin 15)
-          Bit 1:       Azimuth coil B (Pin 1)
-          Bit 2:       Azimuth coil C (Pin 2)
-          Bit 3:       Azimuth coil D (Pin 3)
-          Bit 4:       Altitude coil A (Pin 4)
-          Bit 5:       Altitude coil B (Pin 5)
-          Bit 6:       Altitude coil C (Pin 6)
-          Bit 7:       Altitude coil D (Pin 7)
         """
         # Pull latch low to start sending data
         GPIO.output(self.LATCH_CLK, GPIO.LOW)
@@ -114,11 +111,11 @@ class BasicTurret:
     
     def update_motors(self):
         """Update both motors with current sequence positions"""
-        # Get azimuth bits (lower 4 bits)
-        azimuth_bits = self.STEP_SEQUENCE[self.azimuth_sequence_pos] & 0b00001111
+        # Get azimuth bits
+        azimuth_bits = self.AZIMUTH_SEQUENCE[self.azimuth_sequence_pos]
         
-        # Get altitude bits (upper 4 bits)
-        altitude_bits = self.STEP_SEQUENCE[self.altitude_sequence_pos] & 0b11110000
+        # Get altitude bits
+        altitude_bits = self.ALTITUDE_SEQUENCE[self.altitude_sequence_pos]
         
         # Combine and send to shift register
         combined = azimuth_bits | altitude_bits
@@ -140,6 +137,9 @@ class BasicTurret:
         
         # Update motors
         self.update_motors()
+        
+        # Small delay for motor to respond
+        time.sleep(0.001)
     
     def step_altitude(self, direction):
         """
@@ -157,11 +157,13 @@ class BasicTurret:
         
         # Update motors
         self.update_motors()
+        
+        # Small delay for motor to respond
+        time.sleep(0.001)
     
-    def move_azimuth_degrees(self, degrees, step_delay=0.01):
+    def move_azimuth_degrees(self, degrees, step_delay=0.005):
         """
         Move azimuth motor by specified degrees
-        Positive degrees = clockwise, Negative = counterclockwise
         """
         # Calculate number of steps needed
         steps = int((degrees / 360.0) * self.AZIMUTH_STEPS_PER_REV)
@@ -183,10 +185,9 @@ class BasicTurret:
         
         print(f"✓ Azimuth movement complete: {self.azimuth_angle:.1f}°")
     
-    def move_altitude_degrees(self, degrees, step_delay=0.01):
+    def move_altitude_degrees(self, degrees, step_delay=0.005):
         """
         Move altitude motor by specified degrees
-        Positive degrees = up, Negative = down
         """
         # Calculate number of steps needed
         steps = int((degrees / 360.0) * self.ALTITUDE_STEPS_PER_REV)
@@ -208,240 +209,41 @@ class BasicTurret:
         
         print(f"✓ Altitude movement complete: {self.altitude_angle:.1f}°")
     
-    def move_both_degrees(self, az_degrees, alt_degrees, step_delay=0.01):
-        """
-        Move both motors by specified degrees simultaneously
-        """
-        # Calculate steps for each motor
-        az_steps = int((az_degrees / 360.0) * self.AZIMUTH_STEPS_PER_REV)
-        alt_steps = int((alt_degrees / 360.0) * self.ALTITUDE_STEPS_PER_REV)
-        
-        az_direction = 1 if az_steps > 0 else -1
-        alt_direction = 1 if alt_steps > 0 else -1
-        
-        az_steps = abs(az_steps)
-        alt_steps = abs(alt_steps)
-        
-        print(f"Moving both motors:")
-        print(f"  Azimuth: {az_degrees:.1f}° ({az_steps} steps)")
-        print(f"  Altitude: {alt_degrees:.1f}° ({alt_steps} steps)")
-        
-        # Find which motor needs more steps
-        max_steps = max(az_steps, alt_steps)
-        
-        # Move both motors
-        az_completed = 0
-        alt_completed = 0
-        
-        for i in range(max_steps):
-            # Move azimuth if needed
-            if az_completed < az_steps:
-                self.step_azimuth(az_direction)
-                az_completed += 1
-            
-            # Move altitude if needed
-            if alt_completed < alt_steps:
-                self.step_altitude(alt_direction)
-                alt_completed += 1
-            
-            time.sleep(step_delay)
-            
-            # Show progress every 20 combined steps
-            if (i + 1) % 20 == 0:
-                print(f"  Progress: Az {az_completed}/{az_steps}, Alt {alt_completed}/{alt_steps}")
-        
-        print(f"✓ Both movements complete!")
-        print(f"  Azimuth: {self.azimuth_angle:.1f}°")
-        print(f"  Altitude: {self.altitude_angle:.1f}°")
-    
-    def set_azimuth_angle(self, angle):
-        """Set azimuth motor to specific angle"""
-        current_angle = self.azimuth_angle
-        degrees_to_move = angle - current_angle
-        
-        print(f"Setting azimuth from {current_angle:.1f}° to {angle:.1f}°")
-        print(f"Need to move {degrees_to_move:.1f}°")
-        
-        self.move_azimuth_degrees(degrees_to_move)
-    
-    def set_altitude_angle(self, angle):
-        """Set altitude motor to specific angle"""
-        current_angle = self.altitude_angle
-        degrees_to_move = angle - current_angle
-        
-        print(f"Setting altitude from {current_angle:.1f}° to {angle:.1f}°")
-        print(f"Need to move {degrees_to_move:.1f}°")
-        
-        self.move_altitude_degrees(degrees_to_move)
-    
-    def set_both_angles(self, az_angle, alt_angle):
-        """Set both motors to specific angles"""
-        print(f"Setting motors to:")
-        print(f"  Azimuth: {az_angle:.1f}° (currently {self.azimuth_angle:.1f}°)")
-        print(f"  Altitude: {alt_angle:.1f}° (currently {self.altitude_angle:.1f}°)")
-        
-        az_move = az_angle - self.azimuth_angle
-        alt_move = alt_angle - self.altitude_angle
-        
-        self.move_both_degrees(az_move, alt_move)
-    
-    def test_basic_movement(self):
-        """Basic test to verify motors work"""
+    def test_diagnostics(self):
+        """Diagnostic test to check motors"""
         print("\n" + "="*60)
-        print("BASIC MOTOR TEST")
+        print("DIAGNOSTIC MOTOR TEST")
         print("="*60)
         
-        print("This will test each motor with small movements.")
-        print("Mark the starting position so you can see movement.")
+        print("This will move each motor through one full sequence (4 steps)")
+        print("to verify wiring and step sequence.")
         
-        input("\nPress Enter to start azimuth test...")
+        input("\nPress Enter to start azimuth diagnostic...")
         
-        # Test azimuth
-        print("\n1. Testing azimuth motor (+45°, then -45°)")
-        self.move_azimuth_degrees(45, 0.02)
-        time.sleep(1)
-        self.move_azimuth_degrees(-45, 0.02)
+        print("\n1. Testing azimuth motor sequence (4 steps forward):")
+        for i in range(4):
+            print(f"  Step {i+1}: Energizing coil {self.azimuth_sequence_pos}")
+            self.update_motors()
+            time.sleep(1)
+            self.azimuth_sequence_pos = (self.azimuth_sequence_pos + 1) % 4
         
-        input("\nPress Enter to start altitude test...")
+        input("\nPress Enter to start altitude diagnostic...")
         
-        # Test altitude
-        print("\n2. Testing altitude motor (+45°, then -45°)")
-        self.move_altitude_degrees(45, 0.02)
-        time.sleep(1)
-        self.move_altitude_degrees(-45, 0.02)
+        print("\n2. Testing altitude motor sequence (4 steps forward):")
+        for i in range(4):
+            print(f"  Step {i+1}: Energizing coil {self.altitude_sequence_pos + 4}")
+            self.update_motors()
+            time.sleep(1)
+            self.altitude_sequence_pos = (self.altitude_sequence_pos + 1) % 4
         
-        print("\n✓ Basic test complete!")
-        print(f"Final position: Az={self.azimuth_angle:.1f}°, Alt={self.altitude_angle:.1f}°")
-    
-    def manual_control_interface(self):
-        """Main manual control interface"""
-        print("\n" + "="*70)
-        print("MANUAL MOTOR CONTROL INTERFACE")
-        print("="*70)
-        
-        while True:
-            print(f"\nCurrent Position:")
-            print(f"  Azimuth: {self.azimuth_angle:.1f}°")
-            print(f"  Altitude: {self.altitude_angle:.1f}°")
-            
-            print("\nOptions:")
-            print("1. Move azimuth motor only")
-            print("2. Move altitude motor only")
-            print("3. Move both motors")
-            print("4. Set exact angles for both motors")
-            print("5. Test basic movement (45° each way)")
-            print("6. Return to home (0°, 0°)")
-            print("7. Exit manual control")
-            
-            choice = input("\nEnter your choice (1-7): ").strip()
-            
-            if choice == "1":
-                self.control_azimuth_only()
-            elif choice == "2":
-                self.control_altitude_only()
-            elif choice == "3":
-                self.control_both_motors()
-            elif choice == "4":
-                self.set_exact_angles()
-            elif choice == "5":
-                self.test_basic_movement()
-            elif choice == "6":
-                self.return_to_home()
-            elif choice == "7":
-                print("Exiting manual control...")
-                break
-            else:
-                print("Invalid choice. Please enter 1-7.")
-    
-    def control_azimuth_only(self):
-        """Control azimuth motor only"""
-        print("\n--- Azimuth Motor Control ---")
-        print("Positive degrees = clockwise (right)")
-        print("Negative degrees = counterclockwise (left)")
-        
-        try:
-            degrees = float(input("Enter degrees to move: "))
-            self.move_azimuth_degrees(degrees, 0.01)
-        except ValueError:
-            print("Invalid input. Please enter a number.")
-    
-    def control_altitude_only(self):
-        """Control altitude motor only"""
-        print("\n--- Altitude Motor Control ---")
-        print("Positive degrees = up")
-        print("Negative degrees = down")
-        
-        try:
-            degrees = float(input("Enter degrees to move: "))
-            self.move_altitude_degrees(degrees, 0.01)
-        except ValueError:
-            print("Invalid input. Please enter a number.")
-    
-    def control_both_motors(self):
-        """Control both motors"""
-        print("\n--- Both Motors Control ---")
-        
-        try:
-            az_degrees = float(input("Enter azimuth degrees to move: "))
-            alt_degrees = float(input("Enter altitude degrees to move: "))
-            self.move_both_degrees(az_degrees, alt_degrees, 0.01)
-        except ValueError:
-            print("Invalid input. Please enter numbers.")
-    
-    def set_exact_angles(self):
-        """Set exact angles for both motors"""
-        print("\n--- Set Exact Angles ---")
-        
-        try:
-            az_angle = float(input("Enter target azimuth angle (degrees): "))
-            alt_angle = float(input("Enter target altitude angle (degrees): "))
-            self.set_both_angles(az_angle, alt_angle)
-        except ValueError:
-            print("Invalid input. Please enter numbers.")
-    
-    def return_to_home(self):
-        """Return both motors to home position (0°, 0°)"""
-        print("\nReturning to home position (0°, 0°)...")
-        self.set_both_angles(0, 0)
-        print("✓ At home position")
-    
-    def adjust_steps_per_revolution(self):
-        """Adjust steps per revolution if movement is wrong"""
-        print("\n" + "="*60)
-        print("ADJUST STEPS PER REVOLUTION")
-        print("="*60)
-        
-        print(f"Current values:")
-        print(f"  Azimuth: {self.AZIMUTH_STEPS_PER_REV} steps/revolution")
-        print(f"  Altitude: {self.ALTITUDE_STEPS_PER_REV} steps/revolution")
-        
-        print("\nIf motors don't move the expected distance,")
-        print("you may need to adjust these values.")
-        
-        try:
-            new_az = int(input("\nEnter new azimuth steps/rev (or press Enter to keep current): ") or self.AZIMUTH_STEPS_PER_REV)
-            new_alt = int(input("Enter new altitude steps/rev (or press Enter to keep current): ") or self.ALTITUDE_STEPS_PER_REV)
-            
-            self.AZIMUTH_STEPS_PER_REV = new_az
-            self.ALTITUDE_STEPS_PER_REV = new_alt
-            
-            print(f"\n✓ Updated values:")
-            print(f"  Azimuth: {self.AZIMUTH_STEPS_PER_REV} steps/revolution")
-            print(f"  Altitude: {self.ALTITUDE_STEPS_PER_REV} steps/revolution")
-            
-            # Recalculate current angles with new values
-            self.azimuth_angle = (self.azimuth_steps / self.AZIMUTH_STEPS_PER_REV) * 360.0
-            self.altitude_angle = (self.altitude_steps / self.ALTITUDE_STEPS_PER_REV) * 360.0
-            
-            print(f"Recalculated position: Az={self.azimuth_angle:.1f}°, Alt={self.altitude_angle:.1f}°")
-            
-        except ValueError:
-            print("Invalid input. Using current values.")
+        print("\n✓ Diagnostic complete!")
+        print("Check that each motor stepped 4 times (one full rotation of the magnetic field)")
     
     def cleanup(self):
         """Clean up GPIO and turn off motors"""
         print("\nCleaning up...")
         self.send_to_shift_register(0b00000000)  # Turn off all coils
+        time.sleep(0.1)
         GPIO.cleanup()
         print("✓ GPIO cleanup complete")
         print("✓ Motors turned off")
@@ -449,51 +251,51 @@ class BasicTurret:
 def main():
     """Main program"""
     print("="*70)
-    print("ENME441 LASER TURRET - MANUAL MOTOR CONTROL")
-    print("="*70)
-    print("Starting from scratch - basic implementation")
-    print("\nWiring Check:")
-    print("  RPi GPIO 11 → 74HC595 Pin 11 (SH_CP)")
-    print("  RPi GPIO 10 → 74HC595 Pin 12 (ST_CP)")
-    print("  RPi GPIO 9  → 74HC595 Pin 14 (DS)")
-    print("  3.3V/5V     → 74HC595 Pin 16 (VCC)")
-    print("  GND         → 74HC595 Pins 8 & 13 (GND & OE)")
-    print("\nMotor Connections:")
-    print("  Azimuth Motor → Pins 15, 1, 2, 3")
-    print("  Altitude Motor → Pins 4, 5, 6, 7")
+    print("ENME441 LASER TURRET - DIAGNOSTIC VERSION")
     print("="*70)
     
     turret = None
     try:
         # Initialize the turret
-        turret = BasicTurret()
+        turret = FixedTurret()
         
-        # Main loop
-        while True:
-            print("\n" + "="*70)
-            print("MAIN MENU")
-            print("="*70)
-            print("1. Manual motor control (Feature 2)")
-            print("2. Test basic movement")
-            print("3. Adjust steps per revolution")
-            print("4. Return to home position")
-            print("5. Exit and cleanup")
-            
-            choice = input("\nEnter choice (1-5): ").strip()
-            
-            if choice == "1":
-                turret.manual_control_interface()
-            elif choice == "2":
-                turret.test_basic_movement()
-            elif choice == "3":
-                turret.adjust_steps_per_revolution()
-            elif choice == "4":
-                turret.return_to_home()
-            elif choice == "5":
-                print("Exiting...")
-                break
-            else:
-                print("Invalid choice. Please enter 1-5.")
+        # Diagnostic test first
+        turret.test_diagnostics()
+        
+        # Then test with small movements
+        print("\n" + "="*60)
+        print("SMALL MOVEMENT TEST")
+        print("="*60)
+        
+        print("Testing 90° movement for each motor...")
+        
+        input("\nPress Enter to test azimuth motor (90° right)...")
+        turret.move_azimuth_degrees(90, 0.005)
+        
+        input("\nPress Enter to test altitude motor (90° up)...")
+        turret.move_altitude_degrees(90, 0.005)
+        
+        print(f"\nFinal position:")
+        print(f"  Azimuth: {turret.azimuth_angle:.1f}°")
+        print(f"  Altitude: {turret.altitude_angle:.1f}°")
+        
+        # If movement is wrong, adjust steps per revolution
+        actual_az_move = turret.azimuth_angle
+        actual_alt_move = turret.altitude_angle
+        
+        if abs(actual_az_move - 90) > 5:  # More than 5° error
+            print(f"\n⚠️  Azimuth error: Requested 90°, got {actual_az_move:.1f}°")
+            print(f"   Current steps/rev: {turret.AZIMUTH_STEPS_PER_REV}")
+            new_az = int(turret.AZIMUTH_STEPS_PER_REV * (90 / actual_az_move))
+            print(f"   Suggested new value: {new_az}")
+            turret.AZIMUTH_STEPS_PER_REV = new_az
+        
+        if abs(actual_alt_move - 90) > 5:  # More than 5° error
+            print(f"\n⚠️  Altitude error: Requested 90°, got {actual_alt_move:.1f}°")
+            print(f"   Current steps/rev: {turret.ALTITUDE_STEPS_PER_REV}")
+            new_alt = int(turret.ALTITUDE_STEPS_PER_REV * (90 / actual_alt_move))
+            print(f"   Suggested new value: {new_alt}")
+            turret.ALTITUDE_STEPS_PER_REV = new_alt
     
     except KeyboardInterrupt:
         print("\n\nProgram interrupted by user")
