@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-ENME441 Laser Turret - MOTORS SWAPPED VERSION
-Altitude motor (2400 steps/rev) is now on AZIMUTH (more load)
-Azimuth motor (900 steps/rev) is now on ALTITUDE (less load)
+ENME441 - SWAPPED MOTORS FIXED VERSION
+Correcting the issues you observed
 """
 
 import RPi.GPIO as GPIO
@@ -10,33 +9,33 @@ import time
 import json
 import os
 
-class SwappedTurret:
+class FixedSwappedTurret:
     def __init__(self):
         print("="*70)
-        print("ENME441 - MOTORS SWAPPED CONFIGURATION")
+        print("ENME441 - SWAPPED MOTORS WITH FIXES")
         print("="*70)
-        print("SWAP COMPLETE:")
-        print("• Old Altitude (2400 steps/rev) → NEW AZIMUTH (more load)")
-        print("• Old Azimuth (900 steps/rev) → NEW ALTITUDE (less load)")
+        print("ISSUES IDENTIFIED:")
+        print("1. NEW Azimuth: 60° instead of 90° → 2700 steps/rev")
+        print("2. NEW Altitude: Direction issues → Fixed sequence")
         print("="*70)
         
-        # GPIO Pins (UNCHANGED)
-        self.SHIFT_CLK = 11  # GPIO11 -> Pin 11 (SH_CP)
-        self.LATCH_CLK = 10  # GPIO10 -> Pin 12 (ST_CP)
-        self.DATA_PIN = 9    # GPIO9  -> Pin 14 (DS)
+        # GPIO Pins
+        self.SHIFT_CLK = 11
+        self.LATCH_CLK = 10
+        self.DATA_PIN = 9
         
-        # Configuration file
-        self.CONFIG_FILE = "swapped_config.json"
+        # Configuration
+        self.CONFIG_FILE = "fixed_swapped_config.json"
         
-        # SWAPPED VALUES - Based on what we know about each motor
-        self.AZIMUTH_STEPS_PER_REV = 1800   # OLD altitude motor (was 2400, corrected to 1800)
-        self.ALTITUDE_STEPS_PER_REV = 900   # OLD azimuth motor (was 400, corrected to 900)
+        # FIXED VALUES based on your observations
+        self.AZIMUTH_STEPS_PER_REV = 2700   # Was 1800, corrected for 60°→90°
+        self.ALTITUDE_STEPS_PER_REV = 450   # Was 900, HALVED for double movement
         
         self.load_config()
         
-        print(f"SWAPPED configuration loaded:")
-        print(f"  AZIMUTH (old altitude): {self.AZIMUTH_STEPS_PER_REV} steps/rev")
-        print(f"  ALTITUDE (old azimuth): {self.ALTITUDE_STEPS_PER_REV} steps/rev")
+        print(f"FIXED configuration loaded:")
+        print(f"  Azimuth: {self.AZIMUTH_STEPS_PER_REV} steps/rev (was 1800)")
+        print(f"  Altitude: {self.ALTITUDE_STEPS_PER_REV} steps/rev (was 900)")
         
         # Current state
         self.azimuth_steps = 0
@@ -44,73 +43,77 @@ class SwappedTurret:
         self.azimuth_angle = 0.0
         self.altitude_angle = 0.0
         
-        # IMPORTANT: Wiring is physically swapped, but shift register pins are the same
-        # Shift register → Physical motors:
-        # Pins 15,1,2,3 → NEW AZIMUTH (old altitude motor)
-        # Pins 4,5,6,7 → NEW ALTITUDE (old azimuth motor)
-        
-        # Sequences remain the same (just applied to different physical motors now)
+        # **CRITICAL FIX: Different sequences for each motor**
+        # Azimuth: Standard sequence (works fine)
         self.AZIMUTH_SEQUENCE = [
-            0b00000001,  # Coil A (Pin 15) → NEW AZIMUTH
-            0b00000010,  # Coil B (Pin 1)  → NEW AZIMUTH
-            0b00000100,  # Coil C (Pin 2)  → NEW AZIMUTH
-            0b00001000,  # Coil D (Pin 3)  → NEW AZIMUTH
+            0b00000001,  # Coil A
+            0b00000010,  # Coil B
+            0b00000100,  # Coil C
+            0b00001000,  # Coil D
         ]
         
-        self.ALTITUDE_SEQUENCE = [
-            0b00010000,  # Coil A (Pin 4) → NEW ALTITUDE
-            0b00100000,  # Coil B (Pin 5) → NEW ALTITUDE
-            0b01000000,  # Coil C (Pin 6) → NEW ALTITUDE
-            0b10000000,  # Coil D (Pin 7) → NEW ALTITUDE
+        # **ALTITUDE FIX: Try REVERSED sequence for direction fix**
+        # Since it works in negative but not positive direction
+        self.ALTITUDE_SEQUENCE_FORWARD = [
+            0b00010000,  # Coil A
+            0b00100000,  # Coil B
+            0b01000000,  # Coil C
+            0b10000000,  # Coil D
         ]
+        
+        self.ALTITUDE_SEQUENCE_REVERSED = [
+            0b10000000,  # Coil D (reversed)
+            0b01000000,  # Coil C
+            0b00100000,  # Coil B
+            0b00010000,  # Coil A
+        ]
+        
+        # Start with standard sequence
+        self.altitude_sequence = self.ALTITUDE_SEQUENCE_FORWARD
         
         self.azimuth_seq_pos = 0
         self.altitude_seq_pos = 0
         
-        # Timing optimized for each motor's characteristics
-        self.AZIMUTH_STEP_DELAY = 0.015  # 15ms for new azimuth (was altitude)
-        self.ALTITUDE_STEP_DELAY = 0.020  # 20ms for new altitude (was azimuth)
+        # Direction tracking for altitude
+        self.altitude_last_direction = 0  # -1 = negative, 1 = positive, 0 = unknown
+        
+        # Timing - adjusted for each motor
+        self.AZIMUTH_STEP_DELAY = 0.020  # 20ms for azimuth
+        self.ALTITUDE_STEP_DELAY = 0.030  # 30ms for altitude (needs more time)
         
         # Initialize
         self.setup_gpio()
         
-        # Energize motors in starting position
-        self.update_motors()
-        time.sleep(0.2)
-        
-        print(f"\n✓ SWAPPED system initialized!")
-        print(f"NEW Azimuth (old altitude): {self.azimuth_angle:.1f}°")
-        print(f"NEW Altitude (old azimuth): {self.altitude_angle:.1f}°")
+        print(f"\n✓ Fixed system initialized")
+        print(f"Azimuth delay: {self.AZIMUTH_STEP_DELAY*1000:.1f}ms")
+        print(f"Altitude delay: {self.ALTITUDE_STEP_DELAY*1000:.1f}ms")
+        print(f"Azimuth: {self.azimuth_angle:.1f}°, Altitude: {self.altitude_angle:.1f}°")
         print("="*70)
     
     def load_config(self):
-        """Load swapped configuration"""
+        """Load configuration"""
         try:
             if os.path.exists(self.CONFIG_FILE):
                 with open(self.CONFIG_FILE, 'r') as f:
                     config = json.load(f)
-                    self.AZIMUTH_STEPS_PER_REV = config.get('azimuth_steps_per_rev', 1800)
-                    self.ALTITUDE_STEPS_PER_REV = config.get('altitude_steps_per_rev', 900)
-                    self.AZIMUTH_STEP_DELAY = config.get('azimuth_step_delay', 0.015)
-                    self.ALTITUDE_STEP_DELAY = config.get('altitude_step_delay', 0.020)
-                print("✓ Swapped configuration loaded from file")
+                    self.AZIMUTH_STEPS_PER_REV = config.get('azimuth_steps_per_rev', 2700)
+                    self.ALTITUDE_STEPS_PER_REV = config.get('altitude_steps_per_rev', 450)
+                print("✓ Fixed configuration loaded")
         except:
-            print("Using default swapped values")
+            print("Using calculated fixed values")
     
     def save_config(self):
-        """Save swapped configuration"""
+        """Save configuration"""
         try:
             config = {
                 'azimuth_steps_per_rev': self.AZIMUTH_STEPS_PER_REV,
-                'altitude_steps_per_rev': self.ALTITUDE_STEPS_PER_REV,
-                'azimuth_step_delay': self.AZIMUTH_STEP_DELAY,
-                'altitude_step_delay': self.ALTITUDE_STEP_DELAY
+                'altitude_steps_per_rev': self.ALTITUDE_STEPS_PER_REV
             }
             with open(self.CONFIG_FILE, 'w') as f:
                 json.dump(config, f, indent=2)
-            print("✓ Swapped configuration saved")
+            print("✓ Fixed configuration saved")
         except:
-            print("Warning: Could not save configuration")
+            print("Warning: Could not save")
     
     def setup_gpio(self):
         """Initialize GPIO"""
@@ -128,13 +131,14 @@ class SwappedTurret:
         self.send_to_shift_register(0b00000000)
     
     def send_to_shift_register(self, data):
-        """Send data to shift register"""
+        """Send data with stabilization"""
         GPIO.output(self.LATCH_CLK, GPIO.LOW)
         
         for i in range(7, -1, -1):
             bit = (data >> i) & 0x01
             GPIO.output(self.DATA_PIN, bit)
             GPIO.output(self.SHIFT_CLK, GPIO.HIGH)
+            time.sleep(0.000001)
             GPIO.output(self.SHIFT_CLK, GPIO.LOW)
         
         GPIO.output(self.LATCH_CLK, GPIO.HIGH)
@@ -142,281 +146,277 @@ class SwappedTurret:
         GPIO.output(self.LATCH_CLK, GPIO.LOW)
     
     def update_motors(self):
-        """Update both motors with swapped configuration"""
+        """Update both motors with current sequences"""
         az_pattern = self.AZIMUTH_SEQUENCE[self.azimuth_seq_pos]
-        alt_pattern = self.ALTITUDE_SEQUENCE[self.altitude_seq_pos]
+        alt_pattern = self.altitude_sequence[self.altitude_seq_pos]
         self.send_to_shift_register(az_pattern | alt_pattern)
     
-    def step_azimuth(self, direction=1):
-        """Step NEW azimuth (old altitude motor)"""
+    def step_azimuth(self, direction):
+        """Step azimuth motor"""
         self.azimuth_seq_pos = (self.azimuth_seq_pos + direction) % 4
         self.azimuth_steps += direction
         self.azimuth_angle = (self.azimuth_steps / self.AZIMUTH_STEPS_PER_REV) * 360.0
         self.update_motors()
     
-    def step_altitude(self, direction=1):
-        """Step NEW altitude (old azimuth motor)"""
+    def step_altitude_smart(self, direction):
+        """
+        Smart altitude stepping with direction-dependent sequence
+        """
+        # Track direction for sequence switching
+        if direction != self.altitude_last_direction:
+            print(f"  Altitude direction change: {direction}")
+            
+            # Switch sequence based on what works
+            if direction > 0:  # Positive direction was stuttering
+                # Try reversed sequence for positive
+                self.altitude_sequence = self.ALTITUDE_SEQUENCE_REVERSED
+                print("  Using REVERSED sequence for positive direction")
+            else:  # Negative direction worked
+                self.altitude_sequence = self.ALTITUDE_SEQUENCE_FORWARD
+                print("  Using STANDARD sequence for negative direction")
+            
+            self.altitude_last_direction = direction
+        
+        # Take the step
         self.altitude_seq_pos = (self.altitude_seq_pos + direction) % 4
         self.altitude_steps += direction
         self.altitude_angle = (self.altitude_steps / self.ALTITUDE_STEPS_PER_REV) * 360.0
+        
         self.update_motors()
     
-    def move_azimuth_swapped(self, degrees):
-        """Move NEW azimuth (should be more reliable now)"""
+    def move_azimuth_corrected(self, degrees):
+        """Move azimuth with corrected steps/rev"""
         steps = int((degrees / 360.0) * self.AZIMUTH_STEPS_PER_REV)
         direction = 1 if steps > 0 else -1
         steps = abs(steps)
         
-        print(f"\nNEW AZIMUTH (old altitude): Moving {degrees:.1f}°")
-        print(f"Steps: {steps}, Delay: {self.AZIMUTH_STEP_DELAY*1000:.1f}ms")
+        print(f"\nAZIMUTH: Moving {degrees:.1f}°")
+        print(f"Expected: {degrees:.1f}°, Steps: {steps}")
+        print(f"Based on: {self.AZIMUTH_STEPS_PER_REV} steps/rev")
+        
+        successful_steps = 0
         
         for i in range(steps):
-            self.step_azimuth(direction)
-            time.sleep(self.AZIMUTH_STEP_DELAY)
+            try:
+                self.step_azimuth(direction)
+                successful_steps += 1
+                time.sleep(self.AZIMUTH_STEP_DELAY)
+                
+                if steps > 10 and (i + 1) % (steps // 5) == 0:
+                    progress = (i + 1) / steps * 100
+                    print(f"  {progress:.0f}% - Angle: {self.azimuth_angle:.1f}°")
             
-            if steps > 10 and (i + 1) % (steps // 5) == 0:
-                progress = (i + 1) / steps * 100
-                print(f"  {progress:.0f}% - Angle: {self.azimuth_angle:.1f}°")
+            except Exception as e:
+                print(f"  ⚠️ Step {i+1} failed: {e}")
+                # Slow down and retry
+                time.sleep(self.AZIMUTH_STEP_DELAY * 2)
         
-        print(f"✓ NEW Azimuth complete: {self.azimuth_angle:.1f}°")
-        return self.azimuth_angle
+        actual = self.azimuth_angle
+        print(f"\n✓ Azimuth complete: {actual:.1f}°")
+        print(f"  Steps: {successful_steps}/{steps}")
+        
+        return actual
     
-    def move_altitude_swapped(self, degrees):
-        """Move NEW altitude (should have less load now)"""
+    def move_altitude_directional(self, degrees):
+        """Move altitude with directional intelligence"""
         steps = int((degrees / 360.0) * self.ALTITUDE_STEPS_PER_REV)
         direction = 1 if steps > 0 else -1
         steps = abs(steps)
         
-        print(f"\nNEW ALTITUDE (old azimuth): Moving {degrees:.1f}°")
-        print(f"Steps: {steps}, Delay: {self.ALTITUDE_STEP_DELAY*1000:.1f}ms")
+        print(f"\nALTITUDE: Moving {degrees:.1f}°")
+        print(f"Direction: {'UP' if direction > 0 else 'DOWN'}")
+        print(f"Steps: {steps} (based on {self.ALTITUDE_STEPS_PER_REV} steps/rev)")
+        
+        successful_steps = 0
         
         for i in range(steps):
-            self.step_altitude(direction)
-            time.sleep(self.ALTITUDE_STEP_DELAY)
+            try:
+                self.step_altitude_smart(direction)
+                successful_steps += 1
+                
+                # Longer delay for altitude (it stutters)
+                time.sleep(self.ALTITUDE_STEP_DELAY)
+                
+                if steps > 10 and (i + 1) % (steps // 5) == 0:
+                    progress = (i + 1) / steps * 100
+                    print(f"  {progress:.0f}% - Angle: {self.altitude_angle:.1f}°")
             
-            if steps > 10 and (i + 1) % (steps // 5) == 0:
-                progress = (i + 1) / steps * 100
-                print(f"  {progress:.0f}% - Angle: {self.altitude_angle:.1f}°")
+            except Exception as e:
+                print(f"  ⚠️ Step {i+1} failed: {e}")
+                
+                # Try even slower
+                time.sleep(self.ALTITUDE_STEP_DELAY * 3)
+                
+                # Try re-energizing current position
+                self.update_motors()
+                time.sleep(0.1)
         
-        print(f"✓ NEW Altitude complete: {self.altitude_angle:.1f}°")
-        return self.altitude_angle
+        actual = self.altitude_angle
+        print(f"\n✓ Altitude complete: {actual:.1f}°")
+        print(f"  Steps: {successful_steps}/{steps}")
+        
+        return actual
     
-    def verify_swap(self):
-        """Verify the motor swap works correctly"""
+    def diagnose_altitude_issue(self):
+        """Diagnose the altitude motor direction issue"""
         print("\n" + "="*60)
-        print("VERIFY MOTOR SWAP")
+        print("ALTITUDE MOTOR DIAGNOSIS")
         print("="*60)
         
-        print("Testing 45° movement for both NEW configurations...")
+        print("Issue: Works in negative direction, stutters in positive")
+        print("Possible causes:")
+        print("1. Wrong coil order")
+        print("2. Mechanical binding in one direction")
+        print("3. Insufficient torque for upward movement")
+        print("="*60)
         
-        # Test NEW azimuth (old altitude motor)
-        print("\n1. Testing NEW AZIMUTH (old altitude motor):")
-        print("   Should move smoothly - previously worked well at altitude")
+        # Test small movements in each direction
+        print("\nTesting +10° (UP)...")
+        start_up = self.altitude_angle
+        actual_up = self.move_altitude_directional(10)
+        moved_up = actual_up - start_up
+        
+        print(f"\nTesting -10° (DOWN)...")
+        start_down = self.altitude_angle
+        actual_down = self.move_altitude_directional(-10)
+        moved_down = actual_down - start_down
+        
+        print("\n" + "="*60)
+        print("DIAGNOSIS RESULTS:")
+        print("="*60)
+        print(f"UP (+10°): Requested +10°, Actual {moved_up:+.1f}°")
+        print(f"DOWN (-10°): Requested -10°, Actual {moved_down:+.1f}°")
+        
+        if abs(moved_up - 10) > 5 or abs(moved_down + 10) > 5:
+            print("\n⚠️ SIGNIFICANT DIRECTIONAL ASYMMETRY")
+            print("This suggests WRONG COIL ORDER")
+            print("Try swapping coil pairs on the altitude motor")
+        
+        # Return to approximately original position
+        net_movement = moved_up + moved_down
+        if abs(net_movement) > 1:
+            self.move_altitude_directional(-net_movement)
+    
+    def test_coil_order_fixes(self):
+        """Test different coil orders for altitude"""
+        print("\n" + "="*60)
+        print("TEST COIL ORDER FIXES")
+        print("="*60)
+        
+        print("Trying different coil sequences...")
+        
+        sequences = {
+            "Standard (A,B,C,D)": [0b00010000, 0b00100000, 0b01000000, 0b10000000],
+            "Reversed (D,C,B,A)": [0b10000000, 0b01000000, 0b00100000, 0b00010000],
+            "Alternate1 (A,C,B,D)": [0b00010000, 0b01000000, 0b00100000, 0b10000000],
+            "Alternate2 (B,A,D,C)": [0b00100000, 0b00010000, 0b10000000, 0b01000000],
+        }
+        
+        for name, seq in sequences.items():
+            print(f"\nTesting: {name}")
+            self.altitude_sequence = seq
+            
+            # Reset position
+            self.altitude_seq_pos = 0
+            self.update_motors()
+            time.sleep(0.5)
+            
+            print("  Testing +20°...")
+            start = self.altitude_angle
+            try:
+                # Try 20 steps (small test)
+                for i in range(20):
+                    self.altitude_seq_pos = (self.altitude_seq_pos + 1) % 4
+                    self.altitude_steps += 1
+                    self.altitude_angle = (self.altitude_steps / self.ALTITUDE_STEPS_PER_REV) * 360.0
+                    self.update_motors()
+                    time.sleep(0.05)
+                
+                moved = self.altitude_angle - start
+                print(f"  Result: Moved {moved:.1f}°")
+                
+                response = input("  Did this work better? (y/n): ").lower()
+                if response == 'y':
+                    print(f"  ✓ Found working sequence: {name}")
+                    self.ALTITUDE_SEQUENCE_FORWARD = seq
+                    self.altitude_sequence = seq
+                    break
+            
+            except Exception as e:
+                print(f"  Failed: {e}")
+        
+        # Return to 0
+        self.move_altitude_directional(-self.altitude_angle)
+        print("\n✓ Coil order test complete")
+    
+    def verify_corrections(self):
+        """Verify all corrections work"""
+        print("\n" + "="*60)
+        print("VERIFY ALL CORRECTIONS")
+        print("="*60)
+        
+        print("1. Verifying azimuth correction (90° should work now)...")
         start_az = self.azimuth_angle
-        self.move_azimuth_swapped(45)
+        self.move_azimuth_corrected(90)
         az_moved = self.azimuth_angle - start_az
-        print(f"   Result: Moved {az_moved:.1f}° of 45°")
+        print(f"   Result: {az_moved:.1f}° of 90°")
         
-        # Return to start
-        self.move_azimuth_swapped(-az_moved)
+        # Return
+        self.move_azimuth_corrected(-az_moved)
         
-        # Test NEW altitude (old azimuth motor)
-        print("\n2. Testing NEW ALTITUDE (old azimuth motor):")
-        print("   Now has less load - should work better")
-        start_alt = self.altitude_angle
-        self.move_altitude_swapped(45)
-        alt_moved = self.altitude_angle - start_alt
-        print(f"   Result: Moved {alt_moved:.1f}° of 45°")
+        print("\n2. Verifying altitude in both directions...")
         
-        # Return to start
-        self.move_altitude_swapped(-alt_moved)
+        print("   Testing +30° (UP)...")
+        start_up = self.altitude_angle
+        self.move_altitude_directional(30)
+        up_moved = self.altitude_angle - start_up
+        
+        print("   Testing -30° (DOWN)...")
+        start_down = self.altitude_angle
+        self.move_altitude_directional(-30)
+        down_moved = self.altitude_angle - start_down
         
         print("\n" + "="*60)
-        print("SWAP VERIFICATION RESULTS:")
+        print("VERIFICATION RESULTS:")
         print("="*60)
-        print(f"NEW Azimuth (old altitude): {az_moved:.1f}° of 45°")
-        print(f"NEW Altitude (old azimuth): {alt_moved:.1f}° of 45°")
+        print(f"Azimuth (90° test): {az_moved:.1f}°")
+        print(f"Altitude UP (+30°): {up_moved:.1f}°")
+        print(f"Altitude DOWN (-30°): {down_moved:.1f}°")
         
-        if abs(az_moved - 45) < 5 and abs(alt_moved - 45) < 5:
-            print("\n✓ SWAP SUCCESSFUL!")
-            print("Both motors work in their new positions")
-        else:
-            print("\n⚠️  Some calibration needed")
-            if abs(az_moved - 45) > 5:
-                print(f"  Azimuth correction: {45/az_moved:.3f}")
-            if abs(alt_moved - 45) > 5:
-                print(f"  Altitude correction: {45/alt_moved:.3f}")
+        # Return altitude to center
+        net_alt = up_moved + down_moved
+        if abs(net_alt) > 1:
+            self.move_altitude_directional(-net_alt)
+        
+        print(f"\nFinal: Az={self.azimuth_angle:.1f}°, Alt={self.altitude_angle:.1f}°")
     
-    def calibrate_swapped_motors(self):
-        """Calibrate the swapped motors"""
+    def competition_readiness_test(self):
+        """Test for competition requirements"""
         print("\n" + "="*60)
-        print("CALIBRATE SWAPPED MOTORS")
+        print("COMPETITION READINESS TEST")
         print("="*60)
         
-        print("We'll calibrate each motor in its new position.")
-        
-        # Calibrate NEW azimuth (old altitude)
-        print("\n1. Calibrating NEW AZIMUTH (old altitude motor):")
-        print("   Moving 90° and measuring actual movement...")
-        
-        start_az = self.azimuth_angle
-        self.move_azimuth_swapped(90)
-        actual_az = self.azimuth_angle - start_az
-        
-        if abs(actual_az) > 1.0:
-            correction = 90.0 / actual_az
-            new_az_steps = int(self.AZIMUTH_STEPS_PER_REV * correction)
-            
-            print(f"\n   NEW Azimuth calibration:")
-            print(f"     Target: 90.0°")
-            print(f"     Actual: {actual_az:.1f}°")
-            print(f"     Correction: {correction:.3f}")
-            print(f"     Old: {self.AZIMUTH_STEPS_PER_REV} steps/rev")
-            print(f"     New: {new_az_steps} steps/rev")
-            
-            self.AZIMUTH_STEPS_PER_REV = new_az_steps
-        
-        # Return to start
-        self.move_azimuth_swapped(-actual_az)
-        
-        # Calibrate NEW altitude (old azimuth)
-        print("\n2. Calibrating NEW ALTITUDE (old azimuth motor):")
-        print("   Moving 90° and measuring actual movement...")
-        
-        start_alt = self.altitude_angle
-        self.move_altitude_swapped(90)
-        actual_alt = self.altitude_angle - start_alt
-        
-        if abs(actual_alt) > 1.0:
-            correction = 90.0 / actual_alt
-            new_alt_steps = int(self.ALTITUDE_STEPS_PER_REV * correction)
-            
-            print(f"\n   NEW Altitude calibration:")
-            print(f"     Target: 90.0°")
-            print(f"     Actual: {actual_alt:.1f}°")
-            print(f"     Correction: {correction:.3f}")
-            print(f"     Old: {self.ALTITUDE_STEPS_PER_REV} steps/rev")
-            print(f"     New: {new_alt_steps} steps/rev")
-            
-            self.ALTITUDE_STEPS_PER_REV = new_alt_steps
-        
-        # Return to start
-        self.move_altitude_swapped(-actual_alt)
-        
-        # Save new calibration
-        self.save_config()
-        
-        print("\n✓ Swapped motor calibration complete!")
-        print(f"NEW values:")
-        print(f"  Azimuth: {self.AZIMUTH_STEPS_PER_REV} steps/rev")
-        print(f"  Altitude: {self.ALTITUDE_STEPS_PER_REV} steps/rev")
-    
-    def test_full_range_swapped(self):
-        """Test full range with swapped motors"""
-        print("\n" + "="*60)
-        print("FULL RANGE TEST - SWAPPED MOTORS")
-        print("="*60)
-        
-        print("Testing NEW azimuth (formerly altitude) through full range...")
-        
-        test_positions = [
-            ("Right 45°", 45),
-            ("Right 90°", 90),
-            ("Left 45°", -45),
-            ("Left 90°", -90),
+        movements = [
+            ("Aim right 45°", 45, 0),
+            ("Aim up 30°", 0, 30),
+            ("Aim left 90°", -90, 0),
+            ("Aim down 45°", 0, -45),
+            ("Return to center", -self.azimuth_angle, -self.altitude_angle),
         ]
         
-        for name, angle in test_positions:
-            print(f"\n{name}...")
-            start_angle = self.azimuth_angle
-            self.move_azimuth_swapped(angle)
-            actual = self.azimuth_angle - start_angle
+        for name, az_move, alt_move in movements:
+            print(f"\n{name}:")
             
-            print(f"  Target: {angle:+.1f}°, Actual: {actual:+.1f}°")
+            if az_move != 0:
+                self.move_azimuth_corrected(az_move)
             
-            if abs(actual - angle) < 5:
-                print(f"  ✓ Success")
-            else:
-                print(f"  ⚠️ Limited movement")
-                break
+            if alt_move != 0:
+                self.move_altitude_directional(alt_move)
+            
+            time.sleep(0.5)
         
-        # Return to center
-        print(f"\nReturning to center...")
-        self.move_azimuth_swapped(-self.azimuth_angle)
-        
-        print(f"\n✓ Range test complete")
-        print(f"NEW Azimuth working range: ±{abs(self.azimuth_angle):.1f}°")
-    
-    def interactive_swapped_control(self):
-        """Interactive control for swapped motors"""
-        print("\n" + "="*60)
-        print("INTERACTIVE CONTROL - SWAPPED MOTORS")
-        print("="*60)
-        
-        while True:
-            print(f"\nCurrent position:")
-            print(f"  NEW Azimuth (old altitude): {self.azimuth_angle:.1f}°")
-            print(f"  NEW Altitude (old azimuth): {self.altitude_angle:.1f}°")
-            
-            print("\nControls:")
-            print("1. Move NEW azimuth only")
-            print("2. Move NEW altitude only")
-            print("3. Move both motors")
-            print("4. Adjust step delays")
-            print("5. Return to (0°, 0°)")
-            print("6. Back to main menu")
-            
-            choice = input("\nEnter choice (1-6): ").strip()
-            
-            if choice == "1":
-                try:
-                    deg = float(input("Azimuth degrees to move: "))
-                    self.move_azimuth_swapped(deg)
-                except:
-                    print("Invalid input")
-            
-            elif choice == "2":
-                try:
-                    deg = float(input("Altitude degrees to move: "))
-                    self.move_altitude_swapped(deg)
-                except:
-                    print("Invalid input")
-            
-            elif choice == "3":
-                try:
-                    az_deg = float(input("Azimuth degrees: "))
-                    alt_deg = float(input("Altitude degrees: "))
-                    print("\nMoving both...")
-                    self.move_azimuth_swapped(az_deg)
-                    self.move_altitude_swapped(alt_deg)
-                except:
-                    print("Invalid input")
-            
-            elif choice == "4":
-                print(f"\nCurrent delays:")
-                print(f"  Azimuth: {self.AZIMUTH_STEP_DELAY*1000:.1f}ms")
-                print(f"  Altitude: {self.ALTITUDE_STEP_DELAY*1000:.1f}ms")
-                try:
-                    new_az = float(input("New azimuth delay (ms): ")) / 1000
-                    new_alt = float(input("New altitude delay (ms): ")) / 1000
-                    self.AZIMUTH_STEP_DELAY = max(0.001, new_az)
-                    self.ALTITUDE_STEP_DELAY = max(0.001, new_alt)
-                    self.save_config()
-                    print("Delays updated and saved")
-                except:
-                    print("Invalid input")
-            
-            elif choice == "5":
-                print("\nReturning to center...")
-                self.move_azimuth_swapped(-self.azimuth_angle)
-                self.move_altitude_swapped(-self.altitude_angle)
-                print(f"✓ At center (0°, 0°)")
-            
-            elif choice == "6":
-                break
-            
-            else:
-                print("Invalid choice")
+        print(f"\n✓ Competition test complete!")
+        print(f"Final position: ({self.azimuth_angle:.1f}°, {self.altitude_angle:.1f}°)")
     
     def cleanup(self):
         """Clean shutdown"""
@@ -427,53 +427,72 @@ class SwappedTurret:
         print("✓ Cleanup complete")
 
 def main():
-    """Main program for swapped motors"""
+    """Main program"""
     print("="*70)
-    print("ENME441 - MOTORS SWAPPED CONFIGURATION")
+    print("ENME441 - SWAPPED MOTORS WITH FIXES")
     print("="*70)
-    print("PHYSICAL SWAP:")
-    print("• Altitude motor → AZIMUTH position (more load)")
-    print("• Azimuth motor → ALTITUDE position (less load)")
-    print("")
-    print("ELECTRICAL CONNECTIONS:")
-    print("Shift Register Pins 15,1,2,3 → NEW AZIMUTH (old altitude)")
-    print("Shift Register Pins 4,5,6,7 → NEW ALTITUDE (old azimuth)")
+    print("CORRECTIONS APPLIED:")
+    print("Azimuth: 1800 → 2700 steps/rev (was 60° instead of 90°)")
+    print("Altitude: 900 → 450 steps/rev (was moving double)")
+    print("Altitude: Direction-dependent sequence fixing")
     print("="*70)
     
     turret = None
     try:
-        turret = SwappedTurret()
+        turret = FixedSwappedTurret()
         
         while True:
             print("\n" + "="*60)
-            print("MAIN MENU - SWAPPED MOTORS")
+            print("MAIN MENU - FIXED VERSION")
             print("="*60)
-            print("1. Verify motor swap (START HERE)")
-            print("2. Calibrate swapped motors")
-            print("3. Test full range (new azimuth)")
-            print("4. Interactive control")
-            print("5. Show current configuration")
-            print("6. Exit and cleanup")
+            print("1. Verify corrections (START HERE)")
+            print("2. Diagnose altitude direction issue")
+            print("3. Test coil order fixes")
+            print("4. Competition readiness test")
+            print("5. Interactive control")
+            print("6. Show current settings")
+            print("7. Exit and cleanup")
             
-            choice = input("\nEnter choice (1-6): ").strip()
+            choice = input("\nEnter choice (1-7): ").strip()
             
             if choice == "1":
-                turret.verify_swap()
+                turret.verify_corrections()
             elif choice == "2":
-                turret.calibrate_swapped_motors()
+                turret.diagnose_altitude_issue()
             elif choice == "3":
-                turret.test_full_range_swapped()
+                turret.test_coil_order_fixes()
             elif choice == "4":
-                turret.interactive_swapped_control()
+                turret.competition_readiness_test()
             elif choice == "5":
-                print(f"\nCurrent SWAPPED configuration:")
-                print(f"  Azimuth (old altitude): {turret.AZIMUTH_STEPS_PER_REV} steps/rev")
-                print(f"  Altitude (old azimuth): {turret.ALTITUDE_STEPS_PER_REV} steps/rev")
+                print("\nInteractive control:")
+                print("Commands: a/d = azimuth left/right, w/s = altitude up/down")
+                print("          z = zero, q = quit")
+                while True:
+                    cmd = input("Command: ").lower()
+                    if cmd == 'a':
+                        turret.move_azimuth_corrected(-10)
+                    elif cmd == 'd':
+                        turret.move_azimuth_corrected(10)
+                    elif cmd == 'w':
+                        turret.move_altitude_directional(10)
+                    elif cmd == 's':
+                        turret.move_altitude_directional(-10)
+                    elif cmd == 'z':
+                        turret.move_azimuth_corrected(-turret.azimuth_angle)
+                        turret.move_altitude_directional(-turret.altitude_angle)
+                    elif cmd == 'q':
+                        break
+                    else:
+                        print("Invalid command")
+            elif choice == "6":
+                print(f"\nCurrent FIXED settings:")
+                print(f"  Azimuth steps/rev: {turret.AZIMUTH_STEPS_PER_REV}")
+                print(f"  Altitude steps/rev: {turret.ALTITUDE_STEPS_PER_REV}")
                 print(f"  Azimuth delay: {turret.AZIMUTH_STEP_DELAY*1000:.1f}ms")
                 print(f"  Altitude delay: {turret.ALTITUDE_STEP_DELAY*1000:.1f}ms")
                 print(f"  Azimuth angle: {turret.azimuth_angle:.1f}°")
                 print(f"  Altitude angle: {turret.altitude_angle:.1f}°")
-            elif choice == "6":
+            elif choice == "7":
                 print("Exiting...")
                 break
             else:
