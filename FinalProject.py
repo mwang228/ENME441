@@ -14,13 +14,7 @@ import urllib.request
 class WorkingTurret:
     def __init__(self):
         print("="*70)
-        print("ENME441 - FINAL WORKING VERSION")
-        print("="*70)
-        print("SOLUTIONS:")
-        print("• Azimuth: 2200 steps/rev")
-        print("• Altitude: Power/torque issue → Software workaround")
-        print("• Laser: GPIO26 control with offsets")
-        print("• Units: Meters and degrees")
+        print("ENME441 COURSE PROJECT - MIKE WANG")
         print("="*70)
         
         # GPIO Pins
@@ -88,7 +82,7 @@ class WorkingTurret:
         # Initialize
         self.setup_gpio()
         
-        print(f"\n✓ FINAL system ready")
+        print(f"\nFINAL system ready")
         print(f"Azimuth: {self.azimuth_angle:.1f}°, Altitude: {self.altitude_angle:.1f}°")
         print(f"Laser: OFF (GPIO{self.LASER_PIN})")
         print(f"Laser offset: {self.laser_height*100:.1f} cm height, {self.laser_offset_x*100:.1f} cm right")
@@ -102,7 +96,7 @@ class WorkingTurret:
                     config = json.load(f)
                     self.AZIMUTH_STEPS_PER_REV = config.get('azimuth_steps_per_rev', 2200)
                     self.ALTITUDE_STEPS_PER_REV = config.get('altitude_steps_per_rev', 450)
-                print("✓ Configuration loaded")
+                print("Configuration loaded")
         except:
             print("Using final values")
     
@@ -228,11 +222,11 @@ class WorkingTurret:
         target_angle = self.altitude_angle + degrees
         
         if target_angle > self.altitude_max_up:
-            print(f"⚠️ Can't move to {target_angle:.1f}° (max UP: {self.altitude_max_up:.1f}°)")
+            print(f"Can't move to {target_angle:.1f}° (max UP: {self.altitude_max_up:.1f}°)")
             degrees = self.altitude_max_up - self.altitude_angle
         
         if target_angle < self.altitude_max_down:
-            print(f"⚠️ Can't move to {target_angle:.1f}° (max DOWN: {self.altitude_max_down:.1f}°)")
+            print(f"Can't move to {target_angle:.1f}° (max DOWN: {self.altitude_max_down:.1f}°)")
             degrees = self.altitude_max_down - self.altitude_angle
         
         steps = int((degrees / 360) * self.ALTITUDE_STEPS_PER_REV)
@@ -275,7 +269,7 @@ class WorkingTurret:
             self.azimuth_angle = 0.0
             self.altitude_angle = 0.0
             
-            print("✓ Origin set at current position")
+            print(" Origin set at current position")
             print(f"  Azimuth offset: {self.azimuth_offset} steps")
             print(f"  Altitude offset: {self.altitude_offset} steps")
         else:
@@ -310,11 +304,11 @@ class WorkingTurret:
             if cmd == '1':
                 self.laser_on = True
                 GPIO.output(self.LASER_PIN, GPIO.HIGH)
-                print("✓ Laser turned ON")
+                print(" Laser turned ON")
             elif cmd == '2':
                 self.laser_on = False
                 GPIO.output(self.LASER_PIN, GPIO.LOW)
-                print("✓ Laser turned OFF")
+                print(" Laser turned OFF")
             elif cmd == '3':
                 print("Firing laser for 3 seconds...")
                 GPIO.output(self.LASER_PIN, GPIO.HIGH)
@@ -327,13 +321,13 @@ class WorkingTurret:
                 
                 GPIO.output(self.LASER_PIN, GPIO.LOW)
                 self.laser_on = False
-                print("✓ Laser fired for 3 seconds")
+                print(" Laser fired for 3 seconds")
             elif cmd == 't':
                 print("Testing laser briefly...")
                 GPIO.output(self.LASER_PIN, GPIO.HIGH)
                 time.sleep(0.5)
                 GPIO.output(self.LASER_PIN, GPIO.LOW)
-                print("✓ Laser test complete")
+                print(" Laser test complete")
             elif cmd == 'q':
                 break
             else:
@@ -379,7 +373,7 @@ class WorkingTurret:
                         actual = self.move_altitude_safe(alt_move)
                         print(f"Altitude actually moved: {actual:+.1f}°")
                     
-                    print(f"✓ Position set to: Az={self.azimuth_angle:.1f}°, Alt={self.altitude_angle:.1f}°")
+                    print(f" Position set to: Az={self.azimuth_angle:.1f}°, Alt={self.altitude_angle:.1f}°")
                     
                 except ValueError:
                     print("Invalid input. Please enter numbers only.")
@@ -406,7 +400,7 @@ class WorkingTurret:
             elif cmd == '3':
                 # Zero azimuth
                 self.move_azimuth_safe(-self.azimuth_angle)
-                print("✓ Azimuth zeroed")
+                print(" Azimuth zeroed")
                 
             elif cmd == 'q':
                 break
@@ -509,7 +503,7 @@ class WorkingTurret:
         
         GPIO.output(self.LASER_PIN, GPIO.LOW)
         self.laser_on = False
-        print("✓ Laser fired for 3 seconds")
+        print(" Laser fired for 3 seconds")
     
     def competition_mode(self):
         """Competition mode - read JSON from network and fire at targets"""
@@ -524,7 +518,7 @@ class WorkingTurret:
             print(f"Fetching JSON data from {json_url}...")
             with urllib.request.urlopen(json_url, timeout=5) as response:
                 data = json.loads(response.read().decode())
-                print("✓ JSON data loaded successfully")
+                print(" JSON data loaded successfully")
                 
                 # Convert JSON data from cm/rad to m/deg
                 data = self.convert_json_units(data)
@@ -556,7 +550,7 @@ class WorkingTurret:
             team_num = input("\nEnter YOUR team number: ").strip()
             if team_num in data.get("turrets", {}):
                 team_data = data["turrets"][team_num]
-                print(f"✓ Team {team_num} found at position: r={team_data['r']} m, θ={team_data['theta']:.1f}°")
+                print(f" Team {team_num} found at position: r={team_data['r']} m, θ={team_data['theta']:.1f}°")
                 break
             else:
                 print(f"Team {team_num} not found in data. Please try again.")
@@ -623,11 +617,11 @@ class WorkingTurret:
             
             # Check if altitude is within limits
             if alt_deg > self.altitude_max_up:
-                print(f"⚠️ Cannot target: Altitude {alt_deg:.1f}° exceeds maximum {self.altitude_max_up:.1f}°")
+                print(f"Cannot target: Altitude {alt_deg:.1f}° exceeds maximum {self.altitude_max_up:.1f}°")
                 failed_targets += 1
                 continue
             elif alt_deg < self.altitude_max_down:
-                print(f"⚠️ Cannot target: Altitude {alt_deg:.1f}° exceeds minimum {self.altitude_max_down:.1f}°")
+                print(f"Cannot target: Altitude {alt_deg:.1f}° exceeds minimum {self.altitude_max_down:.1f}°")
                 failed_targets += 1
                 continue
             
@@ -712,11 +706,11 @@ class WorkingTurret:
             
             # Check altitude limits
             if alt_deg > self.altitude_max_up:
-                print(f"\n⚠️ Cannot target:")
+                print(f"\nCannot target:")
                 print(f"  Required altitude {alt_deg:.1f}° exceeds maximum {self.altitude_max_up:.1f}°")
                 return
             elif alt_deg < self.altitude_max_down:
-                print(f"\n⚠️ Cannot target:")
+                print(f"\nCannot target:")
                 print(f"  Required altitude {alt_deg:.1f}° exceeds minimum {self.altitude_max_down:.1f}°")
                 return
             
@@ -776,20 +770,12 @@ class WorkingTurret:
         GPIO.output(self.LASER_PIN, GPIO.LOW)
         time.sleep(0.1)
         GPIO.cleanup()
-        print("✓ Cleanup complete")
+        print(" Cleanup complete")
 
 def main():
     """Main program"""
     print("="*70)
-    print("ENME441 - FINAL WORKING VERSION")
-    print("="*70)
-    print("Key features:")
-    print("• Laser control via GPIO26")
-    print("• Calibration to set origin")
-    print("• Manual laser control (on/off/3-second fire)")
-    print("• Manual motor control")
-    print("• Competition mode with JSON data (converted to m/deg)")
-    print("• Mock competition mode for testing")
+    print("ENME441 COURSE PROJECT - MIKE WANG")
     print("="*70)
     
     turret = None
