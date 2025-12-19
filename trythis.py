@@ -184,43 +184,6 @@ class WorkingTurret:
         
         return False
     
-    def test_azimuth_accuracy(self):
-        """Test azimuth accuracy with 2200 steps/rev"""
-        print("\n" + "="*60)
-        print("AZIMUTH ACCURACY TEST - 2200 steps/rev")
-        print("="*60)
-        
-        test_angles = [45, 90, 180]
-        
-        for target in test_angles:
-            print(f"\nTesting {target}° movement...")
-            
-            start_angle = self.azimuth_angle
-            steps = int((target / 360) * self.AZIMUTH_STEPS_PER_REV)
-            
-            print(f"  Steps: {steps} (based on {self.AZIMUTH_STEPS_PER_REV} steps/rev)")
-            
-            for i in range(steps):
-                self.step_azimuth(1)
-                time.sleep(self.AZIMUTH_DELAY)
-                
-                if steps > 20 and (i + 1) % (steps // 4) == 0:
-                    print(f"  Progress: {((i+1)/steps*100):.0f}%")
-            
-            actual = self.azimuth_angle - start_angle
-            error = abs(actual - target)
-            
-            print(f"  Result: {actual:.1f}° (Target: {target:.1f}°)")
-            print(f"  Error: {error:.1f}° ({error/target*100:.1f}%)")
-            
-            # Return to start
-            return_steps = int((actual / 360) * self.AZIMUTH_STEPS_PER_REV)
-            for i in range(return_steps):
-                self.step_azimuth(-1)
-                time.sleep(self.AZIMUTH_DELAY)
-        
-        print("\n✓ Azimuth test complete")
-    
     def find_altitude_limits(self):
         """Find what altitude movements actually work"""
         print("\n" + "="*60)
@@ -344,100 +307,51 @@ class WorkingTurret:
         actual_degrees = (successful_steps / self.ALTITUDE_STEPS_PER_REV) * 360.0 * direction
         return actual_degrees
     
-    def competition_strategy(self):
-        """Competition strategy with current limitations"""
+    def set_altitude_angle_test(self):
+        """Test to set the altitude motor to a specific angle"""
         print("\n" + "="*60)
-        print("COMPETITION STRATEGY")
+        print("SET ALTITUDE ANGLE TEST")
         print("="*60)
         
-        print("With current motor limitations:")
-        print(f"• Azimuth: Full range (working)")
-        print(f"• Altitude: Limited to {self.altitude_max_up:.1f}° UP, {self.altitude_max_down:.1f}° DOWN")
-        print("")
-        print("STRATEGY:")
-        print("1. Start at optimal altitude position")
-        print("2. Use azimuth for most targeting")
-        print("3. Use altitude only when absolutely needed")
-        print("4. Prioritize targets within altitude range")
-        print("")
-        print("TESTING PRACTICAL MOVEMENTS:")
+        print(f"Current altitude angle: {self.altitude_angle:.1f}°")
+        print(f"Altitude limits: +{self.altitude_max_up:.1f}° to {self.altitude_max_down:.1f}°")
         
-        # Practical test sequence
-        test_movements = [
-            ("Scan right 60°", 60, 0),
-            ("Aim at mid-height target", 0, self.altitude_max_up/2),
-            ("Scan left 120°", -120, 0),
-            ("Aim at low target", 0, self.altitude_max_down),
-            ("Return to start", -self.azimuth_angle, -self.altitude_angle),
-        ]
+        try:
+            target_angle = float(input("\nEnter target angle (degrees): "))
+        except ValueError:
+            print("Invalid input. Please enter a number.")
+            return
         
-        for name, az_move, alt_move in test_movements:
-            print(f"\n{name}:")
-            
-            if az_move != 0:
-                print(f"  Azimuth: {az_move:+.1f}°")
-                self.move_azimuth_safe(az_move)
-            
-            if alt_move != 0:
-                print(f"  Altitude: {alt_move:+.1f}°")
-                actual = self.move_altitude_safe(alt_move)
-                print(f"  Actual: {actual:+.1f}°")
-            
-            print(f"  Position: ({self.azimuth_angle:.1f}°, {self.altitude_angle:.1f}°)")
-            time.sleep(0.3)
+        # Check if target is within limits
+        if target_angle > self.altitude_max_up:
+            print(f"⚠️ Target angle {target_angle:.1f}° exceeds maximum UP limit of {self.altitude_max_up:.1f}°")
+            choice = input(f"Move to maximum UP limit ({self.altitude_max_up:.1f}°) instead? (y/n): ")
+            if choice.lower() == 'y':
+                target_angle = self.altitude_max_up
+            else:
+                return
         
-        print(f"\n✓ Strategy test complete")
-        print(f"Final error: ({self.azimuth_angle:.1f}°, {self.altitude_angle:.1f}°)")
-    
-    def power_boost_test(self):
-        """Test if external power would help"""
-        print("\n" + "="*60)
-        print("POWER BOOST TEST")
-        print("="*60)
+        if target_angle < self.altitude_max_down:
+            print(f"⚠️ Target angle {target_angle:.1f}° exceeds maximum DOWN limit of {self.altitude_max_down:.1f}°")
+            choice = input(f"Move to maximum DOWN limit ({self.altitude_max_down:.1f}°) instead? (y/n): ")
+            if choice.lower() == 'y':
+                target_angle = self.altitude_max_down
+            else:
+                return
         
-        print("Altitude motor issues might be POWER-related")
-        print("")
-        print("QUICK FIXES TO TRY:")
-        print("1. Use SEPARATE battery for motors")
-        print("2. Add 100µF capacitor across motor power")
-        print("3. Check all connections are tight")
-        print("4. Try different USB battery pack")
-        print("")
-        print("TEST: Move azimuth while testing altitude")
+        # Calculate movement needed
+        degrees_to_move = target_angle - self.altitude_angle
+        print(f"\nMoving altitude from {self.altitude_angle:.1f}° to {target_angle:.1f}°")
+        print(f"Movement required: {degrees_to_move:+.1f}°")
         
-        # Test concurrent movement
-        print("\nTesting concurrent movement...")
+        # Perform the movement
+        actual_movement = self.move_altitude_safe(degrees_to_move)
         
-        # Try moving both at once
-        az_steps = int((45 / 360) * self.AZIMUTH_STEPS_PER_REV)
-        alt_steps = int((20 / 360) * self.ALTITUDE_STEPS_PER_REV)
-        
-        max_steps = max(az_steps, alt_steps)
-        
-        az_done = 0
-        alt_done = 0
-        
-        print(f"Moving azimuth 45° and altitude 20° together...")
-        
-        for i in range(max_steps):
-            if az_done < az_steps:
-                self.step_azimuth(1)
-                az_done += 1
-            
-            if alt_done < alt_steps:
-                if self.step_altitude_with_power_boost(1):
-                    alt_done += 1
-            
-            time.sleep(max(self.AZIMUTH_DELAY, self.ALTITUDE_DELAY))
-        
-        print(f"\nResults:")
-        print(f"  Azimuth: {az_done}/{az_steps} steps")
-        print(f"  Altitude: {alt_done}/{alt_steps} steps")
-        
-        if alt_done < alt_steps * 0.5:
-            print("\n⚠️ CONCURRENT MOVEMENT FAILED")
-            print("  Likely INSUFFICIENT POWER")
-            print("  Try separate power supply for motors")
+        print(f"\n✓ Movement complete")
+        print(f"Target angle: {target_angle:.1f}°")
+        print(f"Actual angle reached: {self.altitude_angle:.1f}°")
+        print(f"Movement achieved: {actual_movement:+.1f}°")
+        print(f"Accuracy error: {abs(target_angle - self.altitude_angle):.2f}°")
     
     def simple_interface(self):
         """Simple control interface"""
@@ -494,7 +408,7 @@ def main():
     print("Key features:")
     print("• Azimuth: 2200 steps/rev")
     print("• Altitude: Power-aware movement with limits")
-    print("• Competition-ready with current limitations")
+    print("• Set angle test for altitude motor")
     print("="*70)
     
     turret = None
@@ -505,34 +419,28 @@ def main():
             print("\n" + "="*60)
             print("FINAL WORKING MENU")
             print("="*60)
-            print("1. Test azimuth accuracy (2200 steps/rev)")
-            print("2. Find altitude working limits")
-            print("3. Competition strategy test")
-            print("4. Power boost test")
-            print("5. Simple control interface")
-            print("6. Show current status")
-            print("7. Exit and cleanup")
+            print("1. Find altitude working limits")
+            print("2. Set altitude angle test")
+            print("3. Simple control interface")
+            print("4. Show current status")
+            print("5. Exit and cleanup")
             
-            choice = input("\nEnter choice (1-7): ").strip()
+            choice = input("\nEnter choice (1-5): ").strip()
             
             if choice == "1":
-                turret.test_azimuth_accuracy()
-            elif choice == "2":
                 turret.find_altitude_limits()
+            elif choice == "2":
+                turret.set_altitude_angle_test()
             elif choice == "3":
-                turret.competition_strategy()
-            elif choice == "4":
-                turret.power_boost_test()
-            elif choice == "5":
                 turret.simple_interface()
-            elif choice == "6":
+            elif choice == "4":
                 print(f"\nCurrent status:")
                 print(f"  Azimuth: {turret.azimuth_steps} steps, {turret.azimuth_angle:.1f}°")
                 print(f"  Altitude: {turret.altitude_steps} steps, {turret.altitude_angle:.1f}°")
                 print(f"  Azimuth steps/rev: {turret.AZIMUTH_STEPS_PER_REV}")
                 print(f"  Altitude steps/rev: {turret.ALTITUDE_STEPS_PER_REV}")
                 print(f"  Altitude limits: +{turret.altitude_max_up:.1f}° to {turret.altitude_max_down:.1f}°")
-            elif choice == "7":
+            elif choice == "5":
                 print("Exiting...")
                 break
             else:
