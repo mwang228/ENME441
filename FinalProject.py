@@ -840,4 +840,94 @@ class WorkingTurret:
             cmd = input("Command: ").lower()
             
             if cmd == 'a':
-                self.move_azimuth
+                self.move_azimuth_safe(-10)
+            elif cmd == 'd':
+                self.move_azimuth_safe(10)
+            elif cmd == 'w':
+                self.move_altitude_safe(5)
+            elif cmd == 's':
+                self.move_altitude_safe(-5)
+            elif cmd == '1':
+                self.move_azimuth_safe(45)
+            elif cmd == '2':
+                self.move_azimuth_safe(90)
+            elif cmd == 'z':
+                self.move_azimuth_safe(-self.azimuth_angle)
+                print(f"Azimuth zeroed")
+            elif cmd == 'q':
+                break
+            else:
+                print("Invalid command")
+    
+    def cleanup(self):
+        """Clean shutdown"""
+        print("\nCleaning up...")
+        self.send_to_shift_register(0b00000000)
+        GPIO.output(self.LASER_PIN, GPIO.LOW)
+        time.sleep(0.1)
+        GPIO.cleanup()
+        print("✓ Cleanup complete")
+
+def main():
+    """Main program"""
+    print("="*70)
+    print("ENME441 - FINAL WORKING VERSION")
+    print("="*70)
+    print("Key features:")
+    print("• Laser control via GPIO26")
+    print("• Calibration to set origin")
+    print("• Manual laser control (on/off/3-second fire)")
+    print("• Manual motor control with simultaneous movement")
+    print("• Competition mode with JSON data")
+    print("• Mock competition mode for testing")
+    print("="*70)
+    
+    turret = None
+    try:
+        turret = WorkingTurret()
+        
+        while True:
+            print("\n" + "="*60)
+            print("MAIN MENU")
+            print("="*60)
+            print("1. Manual Laser Control")
+            print("2. Manual Motor Control")
+            print("3. Calibration - Set Origin")
+            print("4. Competition Mode")
+            print("5. Mock Competition Mode")
+            print("6. Simple Control Interface")
+            print("7. Exit and cleanup")
+            
+            choice = input("\nEnter choice (1-7): ").strip()
+            
+            if choice == "1":
+                turret.manual_laser_control()
+            elif choice == "2":
+                turret.manual_motor_control()
+            elif choice == "3":
+                turret.set_calibration_origin()
+            elif choice == "4":
+                turret.competition_mode()
+            elif choice == "5":
+                turret.mock_competition_mode()
+            elif choice == "6":
+                turret.simple_interface()
+            elif choice == "7":
+                print("Exiting...")
+                break
+            else:
+                print("Invalid choice")
+    
+    except KeyboardInterrupt:
+        print("\n\nInterrupted by user")
+    except Exception as e:
+        print(f"\nError: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        if turret:
+            turret.cleanup()
+        print("\nProgram ended.")
+
+if __name__ == "__main__":
+    main()
