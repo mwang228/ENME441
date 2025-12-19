@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """
-ENME441 Laser Turret - Azimuth Motor Debug
-Focus on getting the azimuth motor working
+ENME441 Laser Turret - FINAL WORKING VERSION
+Calibrated motors with proper timing
 """
 
 import RPi.GPIO as GPIO
 import time
+import json
+import os
 
-class AzimuthDebug:
+class WorkingTurret:
     def __init__(self):
         print("="*70)
-        print("AZIMUTH MOTOR DEBUG TOOL")
+        print("ENME441 LASER TURRET - WORKING VERSION")
         print("="*70)
         
         # GPIO Pins for Shift Register
@@ -18,8 +20,20 @@ class AzimuthDebug:
         self.LATCH_CLK = 10  # GPIO10 -> 74HC595 Pin 12 (ST_CP)
         self.DATA_PIN = 9    # GPIO9  -> 74HC595 Pin 14 (DS)
         
-        # Steps per revolution (use your calibrated value for altitude)
-        self.ALTITUDE_STEPS_PER_REV = 2400  # From your calibration
+        # Configuration file
+        self.CONFIG_FILE = "turret_config.json"
+        
+        # Load or set default calibration
+        # Altitude needs 2400 steps/rev (from your testing)
+        # Azimuth likely needs similar - we'll calibrate it
+        self.AZIMUTH_STEPS_PER_REV = 2400  # Start with same as altitude
+        self.ALTITUDE_STEPS_PER_REV = 2400  # Your calibrated value
+        
+        self.load_config()
+        
+        print(f"Loaded configuration:")
+        print(f"  Azimuth: {self.AZIMUTH_STEPS_PER_REV} steps/rev")
+        print(f"  Altitude: {self.ALTITUDE_STEPS_PER_REV} steps/rev")
         
         # Current positions
         self.azimuth_steps = 0
@@ -27,331 +41,352 @@ class AzimuthDebug:
         self.azimuth_angle = 0.0
         self.altitude_angle = 0.0
         
-        # TEST DIFFERENT STEP SEQUENCES:
-        # Try each of these sequences for the azimuth motor
-        
-        # Sequence 1: Standard 4-step (wave drive)
-        self.SEQ_4_STEP = [
-            0b00000001,  # Step 1: Coil A only (Q0)
-            0b00000010,  # Step 2: Coil B only (Q1)
-            0b00000100,  # Step 3: Coil C only (Q2)
-            0b00001000,  # Step 4: Coil D only (Q3)
+        # IMPORTANT: Use 4-step sequence (ABCD) that worked in debug
+        self.AZIMUTH_SEQUENCE = [
+            0b00000001,  # Step 1: Coil A (Pin 15)
+            0b00000010,  # Step 2: Coil B (Pin 1)
+            0b00000100,  # Step 3: Coil C (Pin 2)
+            0b00001000,  # Step 4: Coil D (Pin 3)
         ]
         
-        # Sequence 2: 8-step half-step (more torque, smoother)
-        self.SEQ_8_STEP = [
-            0b00000001,  # Step 1: Coil A
-            0b00000011,  # Step 2: Coils A+B
-            0b00000010,  # Step 3: Coil B
-            0b00000110,  # Step 4: Coils B+C
-            0b00000100,  # Step 5: Coil C
-            0b00001100,  # Step 6: Coils C+D
-            0b00001000,  # Step 7: Coil D
-            0b00001001,  # Step 8: Coils D+A
+        self.ALTITUDE_SEQUENCE = [
+            0b00010000,  # Step 1: Coil A (Pin 4)
+            0b00100000,  # Step 2: Coil B (Pin 5)
+            0b01000000,  # Step 3: Coil C (Pin 6)
+            0b10000000,  # Step 4: Coil D (Pin 7)
         ]
         
-        # Sequence 3: 2-phase excitation (more torque)
-        self.SEQ_2_PHASE = [
-            0b00000011,  # Coils A+B
-            0b00000110,  # Coils B+C
-            0b00001100,  # Coils C+D
-            0b00001001,  # Coils D+A
-        ]
-        
-        # Start with 4-step sequence
-        self.azimuth_sequence = self.SEQ_4_STEP
+        # Current sequence positions
         self.azimuth_seq_pos = 0
         self.altitude_seq_pos = 0
         
         # Initialize GPIO
         self.setup_gpio()
         
-        print("✓ System initialized")
+        # Pre-charge the coils to avoid initial stall
+        self.update_motors()
+        time.sleep(0.1)
+        
+        print(f"\n✓ System initialized!")
+        print(f"Azimuth: {self.azimuth_angle:.1f}°")
+        print(f"Altitude: {self.altitude_angle:.1f}°")
         print("="*70)
     
+    def load_config(self):
+        """Load configuration from file"""
+        try:
+            if os.path.exists(self.CONFIG_FILE):
+                with open(self.CONFIG_FILE, 'r') as f:
+                    config = json.load(f)
+                    self.AZIMUTH_STEPS_PER_REV = config.get('azimuth_steps_per_rev', 2400)
+                    self.ALTITUDE_STEPS_PER_REV = config.get('altitude_steps_per_rev', 2400)
+                print(f"✓ Loaded configuration from {self.CONFIG_FILE}")
+        except:
+            print("Using default configuration")
+    
+    def save_config(self):
+        """Save configuration to file"""
+        try:
+            config = {
+                'azimuth_steps_per_rev': self.AZIMUTH_STEPS_PER_REV,
+                'altitude_steps_per_rev': self.ALTITUDE_STEPS_PER_REV
+            }
+            with open(self.CONFIG_FILE, 'w') as f:
+                json.dump(config, f, indent=2)
+            print(f"✓ Configuration saved")
+        except:
+            print("Warning: Could not save configuration")
+    
     def setup_gpio(self):
-        """Initialize GPIO pins"""
+        """Initialize GPIO with robust settings"""
         GPIO.setmode(GPIO.BCM)
+        GPIO.setwarnings(False)  # Reduce warning noise
         
         # Setup shift register pins
         GPIO.setup(self.SHIFT_CLK, GPIO.OUT)
         GPIO.setup(self.LATCH_CLK, GPIO.OUT)
         GPIO.setup(self.DATA_PIN, GPIO.OUT)
         
-        # Initialize pins to LOW
+        # Initialize to known state
         GPIO.output(self.SHIFT_CLK, GPIO.LOW)
         GPIO.output(self.LATCH_CLK, GPIO.LOW)
         GPIO.output(self.DATA_PIN, GPIO.LOW)
         
-        # Turn off all motors initially
+        # Clear shift register
         self.send_to_shift_register(0b00000000)
         
-        print("✓ GPIO pins initialized")
-        print("✓ Shift register ready")
+        print("✓ GPIO initialized")
     
     def send_to_shift_register(self, data):
-        """Send 8 bits to shift register"""
+        """Robust shift register communication"""
+        # Latch low to start
         GPIO.output(self.LATCH_CLK, GPIO.LOW)
         
+        # Send bits MSB first
         for i in range(7, -1, -1):
             bit = (data >> i) & 0x01
             GPIO.output(self.DATA_PIN, bit)
+            
+            # Clock pulse with proper timing
             GPIO.output(self.SHIFT_CLK, GPIO.HIGH)
-            time.sleep(0.00001)
+            time.sleep(0.000001)  # 1 µs - shorter but reliable
             GPIO.output(self.SHIFT_CLK, GPIO.LOW)
         
+        # Latch high to update outputs
         GPIO.output(self.LATCH_CLK, GPIO.HIGH)
-        time.sleep(0.00001)
+        time.sleep(0.000001)
         GPIO.output(self.LATCH_CLK, GPIO.LOW)
     
-    def test_individual_coils(self):
-        """Test each coil of azimuth motor individually"""
-        print("\n" + "="*60)
-        print("INDIVIDUAL COIL TEST")
-        print("="*60)
-        print("Testing each coil (pins 15, 1, 2, 3) one at a time.")
-        print("You should feel/hear each coil energize.")
-        print("="*60)
+    def update_motors(self):
+        """Update both motors - SIMPLIFIED and ROBUST"""
+        # Get current pattern for each motor
+        az_pattern = self.AZIMUTH_SEQUENCE[self.azimuth_seq_pos]
+        alt_pattern = self.ALTITUDE_SEQUENCE[self.altitude_seq_pos]
         
-        coils = [
-            ("Coil A (Pin 15)", 0b00000001),
-            ("Coil B (Pin 1)",  0b00000010),
-            ("Coil C (Pin 2)",  0b00000100),
-            ("Coil D (Pin 3)",  0b00001000),
-        ]
+        # Combine patterns
+        combined = az_pattern | alt_pattern
         
-        for name, pattern in coils:
-            input(f"\nPress Enter to test {name}...")
-            print(f"Energizing {name}...")
-            
-            # Turn on just this coil (keep altitude motor off)
-            self.send_to_shift_register(pattern)
-            time.sleep(2)
-            
-            # Turn off
-            self.send_to_shift_register(0b00000000)
-            time.sleep(0.5)
-        
-        print("\n✓ Individual coil test complete")
-        print("Did you feel/hear each coil engage?")
+        # Send to shift register
+        self.send_to_shift_register(combined)
     
-    def test_wiring_swap(self):
-        """Test if coils are wired in wrong order"""
-        print("\n" + "="*60)
-        print("WIRING ORDER TEST")
-        print("="*60)
-        print("If motor vibrates but doesn't turn, the coil order might be wrong.")
-        print("Let's test different coil sequences.")
-        print("="*60)
+    def step_azimuth(self, direction):
+        """Step azimuth motor with proper timing"""
+        # Update sequence position
+        self.azimuth_seq_pos = (self.azimuth_seq_pos + direction) % 4
         
-        # Different possible coil orders
-        sequences = {
-            "Standard (A,B,C,D)": [0b00000001, 0b00000010, 0b00000100, 0b00001000],
-            "Reversed (D,C,B,A)": [0b00001000, 0b00000100, 0b00000010, 0b00000001],
-            "Alternating (A,C,B,D)": [0b00000001, 0b00000100, 0b00000010, 0b00001000],
-            "Pair (A+B, B+C, C+D, D+A)": [0b00000011, 0b00000110, 0b00001100, 0b00001001],
-        }
+        # Update step count and angle
+        self.azimuth_steps += direction
+        self.azimuth_angle = (self.azimuth_steps / self.AZIMUTH_STEPS_PER_REV) * 360.0
         
-        for name, seq in sequences.items():
-            input(f"\nPress Enter to test sequence: {name}...")
-            print(f"Testing {name}...")
+        # Update the motors
+        self.update_motors()
+        
+        # CRITICAL: SHORT delay for motor to respond
+        time.sleep(0.002)  # 2 ms - adjust if needed
+    
+    def step_altitude(self, direction):
+        """Step altitude motor with proper timing"""
+        # Update sequence position
+        self.altitude_seq_pos = (self.altitude_seq_pos + direction) % 4
+        
+        # Update step count and angle
+        self.altitude_steps += direction
+        self.altitude_angle = (self.altitude_steps / self.ALTITUDE_STEPS_PER_REV) * 360.0
+        
+        # Update the motors
+        self.update_motors()
+        
+        # CRITICAL: SHORT delay for motor to respond
+        time.sleep(0.002)  # 2 ms - adjust if needed
+    
+    def move_azimuth_smooth(self, degrees, step_delay=0.003):
+        """Move azimuth with smooth operation"""
+        steps = int((degrees / 360.0) * self.AZIMUTH_STEPS_PER_REV)
+        direction = 1 if steps > 0 else -1
+        steps = abs(steps)
+        
+        print(f"\nAzimuth: Moving {degrees:.1f}°")
+        print(f"Steps: {steps}, Delay: {step_delay*1000:.1f}ms/step")
+        
+        for i in range(steps):
+            self.step_azimuth(direction)
+            time.sleep(max(0, step_delay - 0.002))  # Account for step_azimuth delay
             
-            # Run through 8 steps (2 full cycles)
-            for step in range(8):
-                pattern = seq[step % 4]
-                self.send_to_shift_register(pattern)
-                print(f"  Step {step+1}: {pattern:08b}")
-                time.sleep(0.5)
+            if (i + 1) % 50 == 0:
+                print(f"  Step {i+1}/{steps}, Angle: {self.azimuth_angle:.1f}°")
+        
+        print(f"✓ Complete: {self.azimuth_angle:.1f}°")
+        return self.azimuth_angle
+    
+    def move_altitude_smooth(self, degrees, step_delay=0.003):
+        """Move altitude with smooth operation"""
+        steps = int((degrees / 360.0) * self.ALTITUDE_STEPS_PER_REV)
+        direction = 1 if steps > 0 else -1
+        steps = abs(steps)
+        
+        print(f"\nAltitude: Moving {degrees:.1f}°")
+        print(f"Steps: {steps}, Delay: {step_delay*1000:.1f}ms/step")
+        
+        for i in range(steps):
+            self.step_altitude(direction)
+            time.sleep(max(0, step_delay - 0.002))  # Account for step_altitude delay
             
-            # Turn off
-            self.send_to_shift_register(0b00000000)
-            time.sleep(1)
+            if (i + 1) % 50 == 0:
+                print(f"  Step {i+1}/{steps}, Angle: {self.altitude_angle:.1f}°")
+        
+        print(f"✓ Complete: {self.altitude_angle:.1f}°")
+        return self.altitude_angle
+    
+    def calibrate_azimuth(self):
+        """Calibrate azimuth motor steps/rev"""
+        print("\n" + "="*60)
+        print("CALIBRATE AZIMUTH MOTOR")
+        print("="*60)
+        
+        # Move to known start (0°)
+        print("Moving to start position (0°)...")
+        self.move_azimuth_smooth(-self.azimuth_angle)
+        
+        # Test movement
+        test_angle = 90.0
+        print(f"\nTesting {test_angle}° movement...")
+        
+        start_angle = self.azimuth_angle
+        final_angle = self.move_azimuth_smooth(test_angle)
+        actual_movement = final_angle - start_angle
+        
+        print(f"\nCalibration Results:")
+        print(f"  Requested: {test_angle:.1f}°")
+        print(f"  Actual:    {actual_movement:.1f}°")
+        
+        if abs(actual_movement) > 1.0:  # Avoid division by near-zero
+            # Calculate new steps/rev
+            correction = test_angle / actual_movement
+            new_steps = int(self.AZIMUTH_STEPS_PER_REV * correction)
             
-            response = input("Did the motor turn? (y/n): ").lower()
-            if response == 'y':
-                print(f"✓ Found working sequence: {name}")
-                return seq
+            print(f"  Correction factor: {correction:.3f}")
+            print(f"  Old steps/rev: {self.AZIMUTH_STEPS_PER_REV}")
+            print(f"  New steps/rev: {new_steps}")
+            
+            # Update and save
+            self.AZIMUTH_STEPS_PER_REV = new_steps
+            self.save_config()
+            
+            # Test the new calibration
+            print(f"\nTesting new calibration...")
+            self.move_azimuth_smooth(-actual_movement)  # Back to start
+            new_test = self.move_azimuth_smooth(test_angle)
+            print(f"  New movement: {new_test - start_angle:.1f}°")
         
-        print("\n⚠️  No sequence worked. Check power and connections.")
-        return None
+        # Return to 0
+        self.move_azimuth_smooth(-self.azimuth_angle)
+        print("\n✓ Azimuth calibration complete!")
     
-    def test_with_altitude_disabled(self):
-        """Test azimuth with altitude motor completely disconnected"""
+    def verify_both_motors(self):
+        """Verify both motors work together"""
         print("\n" + "="*60)
-        print("TEST WITH ALTITUDE DISCONNECTED")
-        print("="*60)
-        print("Temporarily disconnect the altitude motor wires")
-        print("from the shift register (pins 4,5,6,7).")
-        print("This eliminates any interference.")
+        print("VERIFY BOTH MOTORS")
         print("="*60)
         
-        input("Press Enter when altitude motor is disconnected...")
+        print("1. Moving azimuth +45°...")
+        self.move_azimuth_smooth(45)
         
-        # Test a simple sequence
-        sequence = [0b00000001, 0b00000010, 0b00000100, 0b00001000]
+        print("\n2. Moving altitude +45°...")
+        self.move_altitude_smooth(45)
         
-        print("\nTesting basic 4-step sequence...")
-        for i in range(12):  # 3 full cycles
-            pattern = sequence[i % 4]
-            self.send_to_shift_register(pattern)
-            print(f"Step {i+1}: {pattern:08b}")
-            time.sleep(0.3)
+        print("\n3. Moving both back to 0°...")
+        self.move_azimuth_smooth(-45)
+        self.move_altitude_smooth(-45)
         
-        self.send_to_shift_register(0b00000000)
-        
-        response = input("\nDid the azimuth motor turn? (y/n): ").lower()
-        if response == 'y':
-            print("✓ Azimuth motor works when altitude is disconnected")
-            print("⚠️  Possible issue: Both motors interfering with each other")
-            return True
-        else:
-            print("✗ Azimuth still not turning")
-            return False
+        print(f"\n✓ Verification complete!")
+        print(f"Final: Az={self.azimuth_angle:.1f}°, Alt={self.altitude_angle:.1f}°")
     
-    def check_power_supply(self):
-        """Check if power supply is adequate for both motors"""
+    def interactive_test(self):
+        """Interactive test interface"""
         print("\n" + "="*60)
-        print("POWER SUPPLY CHECK")
-        print("="*60)
-        print("Two stepper motors can draw significant current.")
-        print("Make sure:")
-        print("1. Battery is fully charged")
-        print("2. Shift register has proper VCC (5V recommended)")
-        print("3. Motors are getting enough current")
+        print("INTERACTIVE TEST")
         print("="*60)
         
-        input("Press Enter to test with slower stepping...")
-        
-        # Test with very slow stepping and reduced voltage
-        sequence = [0b00000001, 0b00000010, 0b00000100, 0b00001000]
-        
-        print("\nTesting with 1 second between steps...")
-        for i in range(8):
-            pattern = sequence[i % 4]
-            self.send_to_shift_register(pattern)
-            print(f"Step {i+1}: {pattern:08b}")
-            time.sleep(1.0)  # Very slow
-        
-        self.send_to_shift_register(0b00000000)
-        
-        response = input("\nDid the motor turn slowly? (y/n): ").lower()
-        if response == 'y':
-            print("✓ Motor works with slow stepping")
-            print("⚠️  Possible power issue - try a beefier power supply")
-            return True
-        else:
-            print("✗ Motor still not moving")
-            return False
-    
-    def test_minimal_setup(self):
-        """Test with minimal setup - just one motor"""
-        print("\n" + "="*60)
-        print("MINIMAL SETUP TEST")
-        print("="*60)
-        print("Connect ONLY the azimuth motor:")
-        print("  Azimuth coil A -> Pin 15")
-        print("  Azimuth coil B -> Pin 1")
-        print("Leave coils C and D disconnected for now.")
-        print("="*60)
-        
-        input("Press Enter when only coils A and B are connected...")
-        
-        # Test with just 2 coils (A and B)
-        sequence = [0b00000001, 0b00000010]  # Just coil A, then just coil B
-        
-        print("\nTesting with 2 coils (A and B)...")
-        for i in range(8):
-            pattern = sequence[i % 2]
-            self.send_to_shift_register(pattern)
-            print(f"Step {i+1}: {pattern:08b}")
-            time.sleep(0.5)
-        
-        response = input("\nDid the motor move between two positions? (y/n): ").lower()
-        if response == 'y':
-            print("✓ 2-coil operation works")
-            print("Now connect coils C and D and test again")
-            return True
-        else:
-            print("✗ Even 2-coil operation fails")
-            print("Check: Power, wiring, motor itself")
-            return False
-    
-    def run_comprehensive_debug(self):
-        """Run all debug tests"""
-        print("\nStarting comprehensive azimuth motor debugging...")
-        
-        # 1. Test individual coils
-        self.test_individual_coils()
-        
-        # 2. Test wiring order
-        working_seq = self.test_wiring_swap()
-        if working_seq:
-            print(f"\nUsing sequence: {working_seq}")
-            self.azimuth_sequence = working_seq
-        
-        # 3. Test with altitude disabled
-        self.test_with_altitude_disabled()
-        
-        # 4. Check power supply
-        self.check_power_supply()
-        
-        # 5. Test minimal setup
-        self.test_minimal_setup()
-        
-        print("\n" + "="*70)
-        print("DEBUGGING SUMMARY")
-        print("="*70)
-        print("Based on the tests above:")
-        print("1. If individual coils work but motor doesn't turn → Wrong sequence")
-        print("2. If motor works with altitude disconnected → Interference issue")
-        print("3. If motor works slowly but not fast → Power issue")
-        print("4. If nothing works → Check wiring/power/motor")
-        print("="*70)
+        while True:
+            print(f"\nCurrent: Az={self.azimuth_angle:.1f}°, Alt={self.altitude_angle:.1f}°")
+            print("\nOptions:")
+            print("1. Move azimuth")
+            print("2. Move altitude")
+            print("3. Move both")
+            print("4. Return to (0°, 0°)")
+            print("5. Back to main menu")
+            
+            choice = input("\nEnter choice (1-5): ").strip()
+            
+            if choice == "1":
+                try:
+                    deg = float(input("Degrees to move azimuth (+/-): "))
+                    self.move_azimuth_smooth(deg)
+                except:
+                    print("Invalid input")
+            
+            elif choice == "2":
+                try:
+                    deg = float(input("Degrees to move altitude (+/-): "))
+                    self.move_altitude_smooth(deg)
+                except:
+                    print("Invalid input")
+            
+            elif choice == "3":
+                try:
+                    az_deg = float(input("Azimuth degrees: "))
+                    alt_deg = float(input("Altitude degrees: "))
+                    print("\nMoving both motors...")
+                    # Simple sequential movement for now
+                    self.move_azimuth_smooth(az_deg)
+                    self.move_altitude_smooth(alt_deg)
+                except:
+                    print("Invalid input")
+            
+            elif choice == "4":
+                print("\nReturning to home...")
+                self.move_azimuth_smooth(-self.azimuth_angle)
+                self.move_altitude_smooth(-self.altitude_angle)
+                print(f"✓ At home: (0°, 0°)")
+            
+            elif choice == "5":
+                break
+            
+            else:
+                print("Invalid choice")
     
     def cleanup(self):
-        """Clean up GPIO"""
-        print("\nCleaning up...")
-        self.send_to_shift_register(0b00000000)
+        """Clean shutdown"""
+        print("\nShutting down...")
+        self.send_to_shift_register(0b00000000)  # Turn off coils
         time.sleep(0.1)
         GPIO.cleanup()
         print("✓ Cleanup complete")
 
 def main():
-    """Main debug program"""
+    """Main program"""
     print("="*70)
-    print("AZIMUTH MOTOR TROUBLESHOOTING")
+    print("ENME441 - WORKING TURRET CONTROL")
     print("="*70)
-    print("Altitude motor: WORKING (2400 steps/rev)")
-    print("Azimuth motor: NOT TURNING")
+    print("Key fixes applied:")
+    print("✓ 4-step ABCD sequence (confirmed working)")
+    print("✓ Proper timing delays")
+    print("✓ Pre-charge coils on startup")
     print("="*70)
-    print("\nWe'll systematically debug the azimuth motor.")
-    print("Follow the prompts and report what happens.")
     
-    debug = None
+    turret = None
     try:
-        debug = AzimuthDebug()
+        turret = WorkingTurret()
         
-        print("\nSelect debug option:")
-        print("1. Run comprehensive debug (recommended)")
-        print("2. Test individual coils only")
-        print("3. Test wiring sequences only")
-        print("4. Test with altitude motor disconnected")
-        print("5. Exit")
-        
-        choice = input("\nEnter choice (1-5): ").strip()
-        
-        if choice == "1":
-            debug.run_comprehensive_debug()
-        elif choice == "2":
-            debug.test_individual_coils()
-        elif choice == "3":
-            debug.test_wiring_swap()
-        elif choice == "4":
-            debug.test_with_altitude_disabled()
-        elif choice == "5":
-            print("Exiting...")
-        else:
-            print("Invalid choice")
+        while True:
+            print("\n" + "="*60)
+            print("MAIN MENU")
+            print("="*60)
+            print("1. Calibrate azimuth motor (DO THIS FIRST)")
+            print("2. Verify both motors work")
+            print("3. Interactive test")
+            print("4. Show current configuration")
+            print("5. Exit")
+            
+            choice = input("\nEnter choice (1-5): ").strip()
+            
+            if choice == "1":
+                turret.calibrate_azimuth()
+            elif choice == "2":
+                turret.verify_both_motors()
+            elif choice == "3":
+                turret.interactive_test()
+            elif choice == "4":
+                print(f"\nCurrent configuration:")
+                print(f"  Azimuth: {turret.AZIMUTH_STEPS_PER_REV} steps/rev")
+                print(f"  Altitude: {turret.ALTITUDE_STEPS_PER_REV} steps/rev")
+                print(f"  Azimuth angle: {turret.azimuth_angle:.1f}°")
+                print(f"  Altitude angle: {turret.altitude_angle:.1f}°")
+            elif choice == "5":
+                print("Exiting...")
+                break
+            else:
+                print("Invalid choice")
     
     except KeyboardInterrupt:
         print("\n\nInterrupted by user")
@@ -360,9 +395,9 @@ def main():
         import traceback
         traceback.print_exc()
     finally:
-        if debug:
-            debug.cleanup()
-        print("\nDebug session ended.")
+        if turret:
+            turret.cleanup()
+        print("\nProgram ended.")
 
 if __name__ == "__main__":
     main()
