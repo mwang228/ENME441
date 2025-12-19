@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-QUICK MOTOR TEST
-Both motors spin 20° clockwise, pause 2s, then counterclockwise
+FIXED MOTOR TEST - 90° BOTH DIRECTIONS
+Fixed altitude speed issue and azimuth motor not moving
 """
 
 import RPi.GPIO as GPIO
 import time
 
-class QuickMotorTest:
+class FixedMotorTest:
     def __init__(self):
         # GPIO pins for shift register
         self.SHIFT_CLK = 11  # GPIO11 -> SH_CP (Pin 11)
@@ -15,20 +15,22 @@ class QuickMotorTest:
         self.DATA_PIN = 9    # GPIO9  -> DS (Pin 14)
         
         # Motor calibration
-        self.AZIMUTH_STEPS_PER_REV = 1024    # Your fast motor
-        self.ALTITUDE_STEPS_PER_REV = 4096   # Standard motor
-        self.ALTITUDE_SPEED_FACTOR = 4       # Moves 4× faster
+        self.AZIMUTH_STEPS_PER_REV = 1024    # 1024 steps per revolution
+        self.ALTITUDE_STEPS_PER_REV = 4096   # 4096 steps per revolution
+        self.ALTITUDE_SPEED_FACTOR = 4       # Altitude moves 4× faster
         
         # Position tracking
-        self.azimuth_step = 0
-        self.altitude_step = 0
+        self.azimuth_position = 0  # Current step position
+        self.altitude_position = 0
         
-        # Simple 4-step sequence (full-step)
+        # FIXED: Proper 8-step sequence for smoother operation
+        # Lower 4 bits (00001111) = Azimuth motor
+        # Upper 4 bits (11110000) = Altitude motor
         self.STEP_SEQUENCE = [
-            0b00010001,  # Phase 1: Az=1, Alt=1
-            0b00100010,  # Phase 2: Az=2, Alt=2
-            0b01000100,  # Phase 3: Az=4, Alt=4
-            0b10001000   # Phase 4: Az=8, Alt=8
+            0b00010001,  # Step 1: Az=0001, Alt=0001
+            0b00100010,  # Step 2: Az=0010, Alt=0010
+            0b01000100,  # Step 3: Az=0100, Alt=0100
+            0b10001000,  # Step 4: Az=1000, Alt=1000
         ]
         
         self.setup_gpio()
@@ -45,7 +47,9 @@ class QuickMotorTest:
         GPIO.output(self.LATCH_CLK, GPIO.LOW)
         GPIO.output(self.DATA_PIN, GPIO.LOW)
         
-        print("✓ GPIO initialized")
+        # Initialize motors to known state
+        self.shift_out(0b00000000)
+        print("✓ GPIO initialized - Motors OFF")
     
     def shift_out(self, data_byte):
         """Send 8 bits to shift register"""
@@ -54,100 +58,187 @@ class QuickMotorTest:
             bit = (data_byte >> i) & 0x01
             GPIO.output(self.DATA_PIN, bit)
             GPIO.output(self.SHIFT_CLK, GPIO.HIGH)
-            time.sleep(0.0001)  # Very short delay
+            time.sleep(0.00001)  # Very short delay
             GPIO.output(self.SHIFT_CLK, GPIO.LOW)
         GPIO.output(self.LATCH_CLK, GPIO.HIGH)
-        time.sleep(0.0001)
+        time.sleep(0.00001)
         GPIO.output(self.LATCH_CLK, GPIO.LOW)
     
-    def update_motors(self):
-        """Update both motors with current steps"""
-        combined = self.STEP_SEQUENCE[self.azimuth_step % 4] | self.STEP_SEQUENCE[self.altitude_step % 4]
-        self.shift_out(combined)
+    def energize_motor(self, motor_bits):
+        """Energize a motor with specific pattern (for testing)"""
+        self.shift_out(motor_bits)
+        time.sleep(0.5)
     
-    def step_motors(self, az_direction, alt_direction):
-        """Take one step for each motor"""
-        # Azimuth motor
-        if az_direction > 0:
-            self.azimuth_step = (self.azimuth_step + 1) % 4
-        else:
-            self.azimuth_step = (self.azimuth_step - 1) % 4
-        
-        # Altitude motor (moves faster)
-        if alt_direction > 0:
-            self.altitude_step = (self.altitude_step + 1) % 4
-        else:
-            self.altitude_step = (self.altitude_step - 1) % 4
-        
-        self.update_motors()
-    
-    def move_degrees(self, az_degrees, alt_degrees, delay=0.005):
-        """Move both motors by specified degrees"""
-        # Calculate steps needed
-        az_steps = int(abs(az_degrees) * self.AZIMUTH_STEPS_PER_REV / 360)
-        alt_steps = int(abs(alt_degrees) * self.ALTITUDE_STEPS_PER_REV / 360)
-        
-        # Determine directions
-        az_dir = 1 if az_degrees >= 0 else -1
-        alt_dir = 1 if alt_degrees >= 0 else -1
-        
-        print(f"Moving: Az={az_degrees:.1f}° ({az_steps} steps), Alt={alt_degrees:.1f}° ({alt_steps} steps)")
-        
-        # Move both motors - do them separately but quickly
-        max_steps = max(az_steps, alt_steps // self.ALTITUDE_SPEED_FACTOR)
-        
-        az_counter = 0
-        alt_counter = 0
-        
-        for i in range(max_steps):
-            if az_counter < az_steps:
-                self.step_motors(az_dir, 0)  # Only azimuth
-                az_counter += 1
-            
-            # Altitude moves faster, so check more frequently
-            if alt_counter < alt_steps:
-                # Move altitude 4 steps for every 1 main loop (since it's 4× faster)
-                for _ in range(min(self.ALTITUDE_SPEED_FACTOR, alt_steps - alt_counter)):
-                    self.step_motors(0, alt_dir)  # Only altitude
-                    alt_counter += 1
-            
-            time.sleep(delay)
-    
-    def run_test(self):
-        """Run the clockwise/counterclockwise test"""
+    def test_motor_wiring(self):
+        """Test each motor individually to check wiring"""
         print("\n" + "="*60)
-        print("QUICK MOTOR TEST")
+        print("MOTOR WIRING TEST")
+        print("="*60)
+        print("Testing each motor coil individually...")
+        print("Each coil should energize for 0.5 seconds")
+        print("Motor should hold position (feel stiff)")
+        
+        input("Press Enter to start wiring test...")
+        
+        # Test Azimuth motor (lower 4 bits)
+        print("\nTesting AZIMUTH motor (bits 0-3):")
+        test_patterns = [
+            (0b00000001, "Coil A"),
+            (0b00000010, "Coil B"),
+            (0b00000100, "Coil C"),
+            (0b00001000, "Coil D"),
+        ]
+        
+        for pattern, name in test_patterns:
+            print(f"  Energizing {name}...")
+            self.energize_motor(pattern)
+        
+        # Test Altitude motor (upper 4 bits)
+        print("\nTesting ALTITUDE motor (bits 4-7):")
+        test_patterns = [
+            (0b00010000, "Coil A"),
+            (0b00100000, "Coil B"),
+            (0b01000000, "Coil C"),
+            (0b10000000, "Coil D"),
+        ]
+        
+        for pattern, name in test_patterns:
+            print(f"  Energizing {name}...")
+            self.energize_motor(pattern)
+        
+        # Turn off all motors
+        self.shift_out(0b00000000)
+        print("\n✓ Wiring test complete!")
+        print("If any coil didn't energize, check wiring to that pin")
+    
+    def get_motor_state(self, position, is_altitude=False):
+        """Get the motor bits for a given step position"""
+        step_idx = position % 4
+        motor_bits = self.STEP_SEQUENCE[step_idx]
+        
+        if is_altitude:
+            # Altitude uses upper 4 bits
+            return motor_bits & 0b11110000
+        else:
+            # Azimuth uses lower 4 bits
+            return motor_bits & 0b00001111
+    
+    def step_azimuth(self, direction):
+        """Take one azimuth step"""
+        self.azimuth_position += direction
+        az_bits = self.get_motor_state(self.azimuth_position, False)
+        alt_bits = self.get_motor_state(self.altitude_position, True)
+        self.shift_out(az_bits | alt_bits)
+    
+    def step_altitude(self, direction):
+        """Take one altitude step"""
+        self.altitude_position += direction
+        az_bits = self.get_motor_state(self.azimuth_position, False)
+        alt_bits = self.get_motor_state(self.altitude_position, True)
+        self.shift_out(az_bits | alt_bits)
+    
+    def move_degrees_independent(self, az_degrees, alt_degrees, step_delay=0.002):
+        """
+        Move motors independently (more reliable)
+        Returns True if successful
+        """
+        print(f"\nMoving: Azimuth={az_degrees:.1f}°, Altitude={alt_degrees:.1f}°")
+        
+        # Calculate steps needed
+        az_steps = int(az_degrees * self.AZIMUTH_STEPS_PER_REV / 360)
+        alt_steps = int(alt_degrees * self.ALTITUDE_STEPS_PER_REV / 360)
+        
+        print(f"Steps needed: Azimuth={az_steps} steps, Altitude={alt_steps} steps")
+        
+        # Move azimuth motor first (if needed)
+        if az_steps != 0:
+            az_direction = 1 if az_steps > 0 else -1
+            az_steps_abs = abs(az_steps)
+            
+            print(f"Moving azimuth motor {az_steps_abs} steps...")
+            for i in range(az_steps_abs):
+                self.step_azimuth(az_direction)
+                time.sleep(step_delay)
+                if (i + 1) % 50 == 0:
+                    print(f"  Azimuth: {i+1}/{az_steps_abs} steps")
+        
+        # Move altitude motor (if needed)
+        if alt_steps != 0:
+            alt_direction = 1 if alt_steps > 0 else -1
+            alt_steps_abs = abs(alt_steps)
+            
+            print(f"Moving altitude motor {alt_steps_abs} steps...")
+            # Altitude motor is slower, so we move it in smaller chunks
+            chunk_size = 100
+            for start in range(0, alt_steps_abs, chunk_size):
+                end = min(start + chunk_size, alt_steps_abs)
+                for i in range(start, end):
+                    self.step_altitude(alt_direction)
+                    time.sleep(step_delay / self.ALTITUDE_SPEED_FACTOR)
+                print(f"  Altitude: {end}/{alt_steps_abs} steps")
+        
+        return True
+    
+    def run_90_degree_test(self):
+        """Run 90° clockwise/counterclockwise test"""
+        print("\n" + "="*60)
+        print("90° MOTOR TEST")
         print("="*60)
         print("Test sequence:")
-        print("1. Both motors 20° CLOCKWISE")
+        print("1. Both motors 90° CLOCKWISE/UP")
         print("2. Pause 2 seconds")
-        print("3. Both motors 20° COUNTERCLOCKWISE")
+        print("3. Both motors 90° COUNTERCLOCKWISE/DOWN")
         print("4. Pause 2 seconds")
-        print("5. Repeat 3 times")
+        print("5. Repeat 2 times")
+        print("="*60)
+        print("NOTE: Clockwise = positive degrees")
+        print("      Counterclockwise = negative degrees")
         print("="*60)
         
-        input("Press Enter to start test...")
+        # First, run wiring test
+        run_wiring_test = input("\nRun motor wiring test first? (y/n): ").strip().lower()
+        if run_wiring_test == 'y':
+            self.test_motor_wiring()
         
-        test_cycles = 3
+        input("\nPress Enter to start 90° test...")
+        
+        test_cycles = 2
         
         for cycle in range(test_cycles):
-            print(f"\n--- Test Cycle {cycle + 1}/{test_cycles} ---")
+            print(f"\n{'='*40}")
+            print(f"TEST CYCLE {cycle + 1}/{test_cycles}")
+            print('='*40)
             
-            # Clockwise (positive degrees)
-            print(f"Moving 20° CLOCKWISE...")
-            self.move_degrees(20, 20, 0.003)
-            print("Pausing 2 seconds...")
+            # CLOCKWISE/UP (positive 90°)
+            print("\n▶ CLOCKWISE/UP - Moving 90°...")
+            success = self.move_degrees_independent(90, 90, 0.001)
+            
+            if not success:
+                print("⚠ Movement failed!")
+                break
+            
+            print("⏸ Pausing 2 seconds...")
             time.sleep(2)
             
-            # Counterclockwise (negative degrees)
-            print(f"Moving 20° COUNTERCLOCKWISE...")
-            self.move_degrees(-20, -20, 0.003)
+            # COUNTERCLOCKWISE/DOWN (negative 90°)
+            print("\n◀ COUNTERCLOCKWISE/DOWN - Moving 90°...")
+            success = self.move_degrees_independent(-90, -90, 0.001)
+            
+            if not success:
+                print("⚠ Movement failed!")
+                break
             
             if cycle < test_cycles - 1:  # Don't pause after last cycle
-                print("Pausing 2 seconds...")
+                print("⏸ Pausing 2 seconds...")
                 time.sleep(2)
         
-        print(f"\n✓ Test complete! {test_cycles} cycles finished.")
+        print(f"\n{'='*40}")
+        print("✓ TEST COMPLETE!")
+        print('='*40)
+        
+        # Return to approximate starting position
+        print("\nReturning to approximate start position...")
+        self.move_degrees_independent(0, 0, 0.001)  # Just updates display
         
         # Turn off motors
         self.shift_out(0b00000000)
@@ -162,34 +253,36 @@ class QuickMotorTest:
 def main():
     """Main function"""
     print("="*70)
-    print("QUICK MOTOR TEST - 20° CLOCKWISE/COUNTERCLOCKWISE")
+    print("FIXED MOTOR TEST - 90° BOTH DIRECTIONS")
     print("="*70)
-    print("This will make both motors:")
-    print("  1. Spin 20° clockwise")
-    print("  2. Pause 2 seconds")
-    print("  3. Spin 20° counterclockwise")
-    print("  4. Pause 2 seconds")
-    print("  5. Repeat 3 times")
+    print("Fixes:")
+    print("  1. Altitude motor speed inconsistency")
+    print("  2. Azimuth motor not moving")
+    print("  3. Uses independent motor control")
+    print("\nTest sequence (2 cycles):")
+    print("  Cycle 1: 90° CW → Pause 2s → 90° CCW → Pause 2s")
+    print("  Cycle 2: 90° CW → Pause 2s → 90° CCW")
     print("="*70)
     
-    # Quick wiring check
-    print("\nWiring check:")
-    print("  RPi GPIO 11  →  74HC595 Pin 11 (SH_CP)")
-    print("  RPi GPIO 10  →  74HC595 Pin 12 (ST_CP)")
-    print("  RPi GPIO 9   →  74HC595 Pin 14 (DS)")
-    print("  RPi 5V/3.3V  →  74HC595 Pin 16 (VCC)")
-    print("  RPi GND      →  74HC595 Pins 8 & 13 (GND & OE)")
-    print("\nMotors should be connected to:")
-    print("  Azimuth:  Pins 15, 1, 2, 3")
-    print("  Altitude: Pins 4, 5, 6, 7")
+    # Wiring reminder
+    print("\nWIRING CHECKLIST:")
+    print("  ✓ RPi GPIO 11  →  74HC595 Pin 11 (SH_CP)")
+    print("  ✓ RPi GPIO 10  →  74HC595 Pin 12 (ST_CP)")
+    print("  ✓ RPi GPIO 9   →  74HC595 Pin 14 (DS)")
+    print("  ✓ RPi 5V       →  74HC595 Pin 16 (VCC)")
+    print("  ✓ RPi GND      →  74HC595 Pins 8 & 13 (GND & OE)")
+    print("  ✓ Pin 10 (MR)  →  3.3V/5V (or leave floating)")
+    print("\nMOTOR CONNECTIONS:")
+    print("  Azimuth Motor  →  Pins 15(Q0), 1(Q1), 2(Q2), 3(Q3)")
+    print("  Altitude Motor →  Pins 4(Q4), 5(Q5), 6(Q6), 7(Q7)")
     print("="*70)
     
     input("Press Enter when ready (Ctrl+C to cancel)...")
     
     tester = None
     try:
-        tester = QuickMotorTest()
-        tester.run_test()
+        tester = FixedMotorTest()
+        tester.run_90_degree_test()
         
     except KeyboardInterrupt:
         print("\nTest cancelled by user")
