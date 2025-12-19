@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-ENME441 LASER TURRET - FINAL COMPETITION VERSION
-Updated with your working motor calibrations and limits
+ENME441 LASER TURRET - FINAL COMPETITION VERSION (FIXED)
+Non-recursive version to avoid recursion depth error
 """
 
 import RPi.GPIO as GPIO
@@ -58,6 +58,7 @@ class CompetitionTurret:
         # ========== COMPETITION DATA ==========
         self.competition_data = None
         self.my_position = None           # (r, theta) in cm and radians
+        self.my_cartesian = (0, 0, 0)     # (x, y, z) coordinates
         self.targets_hit = set()
         
         # ========== GPIO CONFIGURATION ==========
@@ -230,11 +231,13 @@ class CompetitionTurret:
             success = self.move_motors_direct(az_steps, alt_steps, step_delay)
             if success:
                 print(f"✓ New position: Az={self.azimuth_angle:+.1f}°, Alt={self.altitude_angle:+.1f}°")
+            else:
+                print(f"✗ Movement failed (limits reached)")
             return success
         return True
     
     def move_to_angle(self, target_az: float, target_alt: float, step_delay: float = 0.001) -> bool:
-        """Move to specific angles"""
+        """Move to specific angles - NON-RECURSIVE VERSION"""
         az_move = target_az - self.azimuth_angle
         alt_move = target_alt - self.altitude_angle
         
@@ -353,8 +356,9 @@ class CompetitionTurret:
                 print("1. Move to maximum UP position")
                 print("2. Move to maximum DOWN position")
                 print("3. Move to center")
+                print("4. Test diagonal movement")
                 
-                test_choice = input("Enter choice (1-3): ").strip()
+                test_choice = input("Enter choice (1-4): ").strip()
                 
                 if test_choice == "1":
                     print(f"Moving to maximum UP ({self.MAX_ALTITUDE_UP}°)...")
@@ -365,6 +369,9 @@ class CompetitionTurret:
                 elif test_choice == "3":
                     print("Moving to center (0°, 0°)...")
                     self.move_to_angle(0, 0, 0.001)
+                elif test_choice == "4":
+                    print("Testing diagonal (45°, -30°)...")
+                    self.move_to_angle(45, -30, 0.001)
                 else:
                     print("Invalid choice")
             
@@ -489,12 +496,9 @@ class CompetitionTurret:
         horizontal_dist = math.sqrt(dx*dx + dy*dy)
         
         # Calculate azimuth (0° = pointing to field center)
-        # Note: math.atan2 returns angle from positive x-axis
-        # We need to adjust based on our coordinate system
         azimuth_rad = math.atan2(dy, dx)
         
         # Adjust azimuth based on our position
-        # If we're at angle θ from center, adjust accordingly
         if hasattr(self, 'my_position'):
             our_theta = self.my_position['theta']
             azimuth_rad = azimuth_rad - our_theta
@@ -538,13 +542,14 @@ class CompetitionTurret:
                 all_targets.append((f"Turret {team_id}", x, y, z))
         
         # Globes (passive targets)
-        for i, globe in enumerate(self.competition_data.get("globes", [])):
-            r = globe['r']
-            theta = globe['theta']
-            z = globe['z']
-            x = r * math.cos(theta)
-            y = r * math.sin(theta)
-            all_targets.append((f"Globe {i+1}", x, y, z))
+        if "globes" in self.competition_data:
+            for i, globe in enumerate(self.competition_data["globes"]):
+                r = globe['r']
+                theta = globe['theta']
+                z = globe['z']
+                x = r * math.cos(theta)
+                y = r * math.sin(theta)
+                all_targets.append((f"Globe {i+1}", x, y, z))
         
         print(f"Found {len(all_targets)} targets")
         
