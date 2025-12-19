@@ -1,34 +1,42 @@
 #!/usr/bin/env python3
 """
-CORRECTED MOTOR TEST - 90° BOTH DIRECTIONS
-Fixed step calculations for both motors
+FINAL MOTOR TEST - FIXED STEP CALCULATIONS
+Matching step counts between motors, fixing overshoot
 """
 
 import RPi.GPIO as GPIO
 import time
 
-class CorrectMotorTest:
+class FinalMotorTest:
     def __init__(self):
         # GPIO pins for shift register
         self.SHIFT_CLK = 11  # GPIO11 -> SH_CP (Pin 11)
         self.LATCH_CLK = 10  # GPIO10 -> ST_CP (Pin 12)
         self.DATA_PIN = 9    # GPIO9  -> DS (Pin 14)
         
-        # CORRECTED: Motor calibration (from your original code)
-        # IMPORTANT: These values determine how many steps for 90°
-        self.AZIMUTH_STEPS_PER_REV = 1024    # Fast motor - 1024 steps/rev
-        self.ALTITUDE_STEPS_PER_REV = 4096   # Standard motor - 4096 steps/rev
+        # Motor calibration - USING YOUR ORIGINAL VALUES
+        self.AZIMUTH_STEPS_PER_REV = 1024    # Fast motor
+        self.ALTITUDE_STEPS_PER_REV = 4096   # Standard motor
+        
+        # IMPORTANT: Our 4-step sequence means each "step" in code
+        # moves the motor 4 microsteps. So we need to divide by 4.
+        self.AZIMUTH_MICROSTEPS_PER_STEP = 4
+        self.ALTITUDE_MICROSTEPS_PER_STEP = 4
+        
+        # Effective steps for our 4-step sequence
+        self.AZIMUTH_EFFECTIVE_STEPS = self.AZIMUTH_STEPS_PER_REV // self.AZIMUTH_MICROSTEPS_PER_STEP
+        self.ALTITUDE_EFFECTIVE_STEPS = self.ALTITUDE_STEPS_PER_REV // self.ALTITUDE_MICROSTEPS_PER_STEP
         
         # Position tracking
-        self.azimuth_position = 0  # Current step position
-        self.altitude_position = 0
+        self.azimuth_step_idx = 0  # Current position in 4-step sequence
+        self.altitude_step_idx = 0
         
-        # Step sequence for 4-wire bipolar stepper
+        # Simple 4-step sequence
         self.STEP_SEQUENCE = [
-            0b00010001,  # Step 1: Az=0001 (pin 15), Alt=0001 (pin 4)
-            0b00100010,  # Step 2: Az=0010 (pin 1),  Alt=0010 (pin 5)
-            0b01000100,  # Step 3: Az=0100 (pin 2),  Alt=0100 (pin 6)
-            0b10001000,  # Step 4: Az=1000 (pin 3),  Alt=1000 (pin 7)
+            0b00010001,  # Step 0: Az=0001, Alt=0001
+            0b00100010,  # Step 1: Az=0010, Alt=0010
+            0b01000100,  # Step 2: Az=0100, Alt=0100
+            0b10001000,  # Step 3: Az=1000, Alt=1000
         ]
         
         self.setup_gpio()
@@ -47,9 +55,14 @@ class CorrectMotorTest:
         
         # Initialize motors to OFF
         self.shift_out(0b00000000)
-        print("✓ GPIO initialized - Motors OFF")
-        print(f"Azimuth: {self.AZIMUTH_STEPS_PER_REV} steps/rev")
-        print(f"Altitude: {self.ALTITUDE_STEPS_PER_REV} steps/rev")
+        print("="*70)
+        print("FINAL MOTOR TEST - MATCHED STEP COUNTS")
+        print("="*70)
+        print(f"Azimuth: {self.AZIMUTH_STEPS_PER_REV} microsteps/rev")
+        print(f"        = {self.AZIMUTH_EFFECTIVE_STEPS} effective steps/rev")
+        print(f"Altitude: {self.ALTITUDE_STEPS_PER_REV} microsteps/rev")
+        print(f"         = {self.ALTITUDE_EFFECTIVE_STEPS} effective steps/rev")
+        print("="*70)
     
     def shift_out(self, data_byte):
         """Send 8 bits to shift register"""
@@ -64,156 +77,94 @@ class CorrectMotorTest:
         time.sleep(0.00001)
         GPIO.output(self.LATCH_CLK, GPIO.LOW)
     
-    def test_single_step(self):
-        """Test single step movement for both motors"""
-        print("\nTesting single step movements...")
-        
-        # Test azimuth motor
-        print("\nAzimuth motor - single step forward:")
-        for i in range(4):
-            bits = self.STEP_SEQUENCE[i] & 0b00001111  # Azimuth bits only
-            print(f"  Step {i+1}: {bits:08b} (should energize one coil)")
-            self.shift_out(bits)
-            input("  Press Enter for next step...")
-        
-        # Test altitude motor  
-        print("\nAltitude motor - single step forward:")
-        for i in range(4):
-            bits = self.STEP_SEQUENCE[i] & 0b11110000  # Altitude bits only
-            print(f"  Step {i+1}: {bits:08b} (should energize one coil)")
-            self.shift_out(bits)
-            input("  Press Enter for next step...")
-        
-        self.shift_out(0b00000000)
-        print("✓ Single step test complete")
+    def update_motors(self):
+        """Update both motors with current step indices"""
+        combined = self.STEP_SEQUENCE[self.azimuth_step_idx] | self.STEP_SEQUENCE[self.altitude_step_idx]
+        self.shift_out(combined)
     
-    def calculate_steps_for_degrees(self, degrees, is_altitude=False):
-        """Calculate steps needed for given degrees"""
+    def calculate_effective_steps(self, degrees, is_altitude=False):
+        """Calculate effective steps needed for given degrees"""
         if is_altitude:
-            steps_per_rev = self.ALTITUDE_STEPS_PER_REV
+            effective_steps_per_rev = self.ALTITUDE_EFFECTIVE_STEPS
         else:
-            steps_per_rev = self.AZIMUTH_STEPS_PER_REV
+            effective_steps_per_rev = self.AZIMUTH_EFFECTIVE_STEPS
         
-        # Steps = (degrees / 360) × steps_per_revolution
-        steps = int((degrees / 360.0) * steps_per_rev)
+        # Effective steps = (degrees / 360) × effective_steps_per_rev
+        steps = int((degrees / 360.0) * effective_steps_per_rev)
         return steps
     
-    def step_azimuth(self, direction):
-        """Take one azimuth step"""
-        self.azimuth_position = (self.azimuth_position + direction) % 4
-        az_bits = self.STEP_SEQUENCE[self.azimuth_position] & 0b00001111
-        # Keep altitude motor in current state
-        alt_bits = self.STEP_SEQUENCE[self.altitude_position % 4] & 0b11110000
-        self.shift_out(az_bits | alt_bits)
-    
-    def step_altitude(self, direction):
-        """Take one altitude step"""
-        self.altitude_position = (self.altitude_position + direction) % 4
-        alt_bits = self.STEP_SEQUENCE[self.altitude_position] & 0b11110000
-        # Keep azimuth motor in current state
-        az_bits = self.STEP_SEQUENCE[self.azimuth_position % 4] & 0b00001111
-        self.shift_out(az_bits | alt_bits)
-    
-    def move_azimuth_degrees(self, degrees, step_delay=0.002):
-        """Move azimuth motor by specific degrees"""
-        steps_needed = self.calculate_steps_for_degrees(abs(degrees), False)
+    def move_azimuth_effective(self, degrees, step_delay=0.002):
+        """Move azimuth motor by effective steps"""
+        effective_steps = self.calculate_effective_steps(abs(degrees), False)
         direction = 1 if degrees >= 0 else -1
         
-        print(f"Azimuth: {degrees:.1f}° = {steps_needed} steps")
+        print(f"Azimuth: {degrees:.1f}° = {effective_steps} effective steps")
+        print(f"(={effective_steps * self.AZIMUTH_MICROSTEPS_PER_STEP} microsteps)")
         
-        for i in range(steps_needed):
-            self.step_azimuth(direction)
+        for i in range(effective_steps):
+            self.azimuth_step_idx = (self.azimuth_step_idx + direction) % 4
+            self.update_motors()
+            time.sleep(step_delay)
+            if (i + 1) % 25 == 0:
+                print(f"  Step {i+1}/{effective_steps}")
+        
+        return True
+    
+    def move_altitude_effective(self, degrees, step_delay=0.002):
+        """Move altitude motor by effective steps"""
+        effective_steps = self.calculate_effective_steps(abs(degrees), True)
+        direction = 1 if degrees >= 0 else -1
+        
+        print(f"Altitude: {degrees:.1f}° = {effective_steps} effective steps")
+        print(f"(={effective_steps * self.ALTITUDE_MICROSTEPS_PER_STEP} microsteps)")
+        
+        for i in range(effective_steps):
+            self.altitude_step_idx = (self.altitude_step_idx + direction) % 4
+            self.update_motors()
             time.sleep(step_delay)
             if (i + 1) % 50 == 0:
-                print(f"  Step {i+1}/{steps_needed}")
+                print(f"  Step {i+1}/{effective_steps}")
         
         return True
     
-    def move_altitude_degrees(self, degrees, step_delay=0.002):
-        """Move altitude motor by specific degrees"""
-        steps_needed = self.calculate_steps_for_degrees(abs(degrees), True)
-        direction = 1 if degrees >= 0 else -1
-        
-        print(f"Altitude: {degrees:.1f}° = {steps_needed} steps")
-        
-        for i in range(steps_needed):
-            self.step_altitude(direction)
-            time.sleep(step_delay)
-            if (i + 1) % 100 == 0:
-                print(f"  Step {i+1}/{steps_needed}")
-        
-        return True
-    
-    def move_both_motors(self, az_degrees, alt_degrees, step_delay=0.002):
-        """Move both motors by specific degrees"""
-        print(f"\nMoving both motors:")
-        print(f"  Azimuth: {az_degrees:.1f}°")
-        print(f"  Altitude: {alt_degrees:.1f}°")
-        
-        # Calculate steps for each motor
-        az_steps = self.calculate_steps_for_degrees(abs(az_degrees), False)
-        alt_steps = self.calculate_steps_for_degrees(abs(alt_degrees), True)
-        
-        az_direction = 1 if az_degrees >= 0 else -1
-        alt_direction = 1 if alt_degrees >= 0 else -1
-        
-        print(f"Steps: Azimuth={az_steps}, Altitude={alt_steps}")
-        
-        # Determine which motor needs more steps
-        max_steps = max(az_steps, alt_steps)
-        
-        # Move both motors with correct timing
-        az_completed = 0
-        alt_completed = 0
-        
-        while az_completed < az_steps or alt_completed < alt_steps:
-            # Move azimuth if needed
-            if az_completed < az_steps:
-                self.step_azimuth(az_direction)
-                az_completed += 1
-            
-            # Move altitude if needed
-            if alt_completed < alt_steps:
-                self.step_altitude(alt_direction)
-                alt_completed += 1
-            
-            # Sleep for step delay
-            time.sleep(step_delay)
-        
-        print(f"✓ Movement complete")
-        return True
-    
-    def run_precise_90_test(self):
-        """Run precise 90° test"""
+    def run_matched_90_test(self):
+        """Run 90° test with matched step counts"""
         print("\n" + "="*60)
-        print("PRECISE 90° MOTOR TEST")
+        print("MATCHED 90° TEST - BOTH MOTORS USE SAME STEP COUNT")
         print("="*60)
-        print("Using CORRECT step calculations:")
-        print(f"  90° azimuth = {self.calculate_steps_for_degrees(90, False)} steps")
-        print(f"  90° altitude = {self.calculate_steps_for_degrees(90, True)} steps")
-        print("\nTest sequence (1 cycle):")
+        
+        # Calculate steps for 90°
+        az_steps_90 = self.calculate_effective_steps(90, False)
+        alt_steps_90 = self.calculate_effective_steps(90, True)
+        
+        print(f"For 90° movement:")
+        print(f"  Azimuth: {az_steps_90} effective steps")
+        print(f"  Altitude: {alt_steps_90} effective steps")
+        print("\nThey should be the SAME number!")
+        
+        if az_steps_90 != alt_steps_90:
+            print(f"⚠ WARNING: Step counts don't match! Check calculations.")
+        
+        print("\nTest sequence:")
         print("  1. Both motors 90° CLOCKWISE/UP")
         print("  2. Pause 2 seconds")
         print("  3. Both motors 90° COUNTERCLOCKWISE/DOWN")
         print("="*60)
         
-        # Optional: Test single steps first
-        test_single = input("\nTest single steps first? (y/n): ").strip().lower()
-        if test_single == 'y':
-            self.test_single_step()
-        
-        input("\nPress Enter to start 90° test...")
+        input("Press Enter to start test...")
         
         # CLOCKWISE/UP (positive 90°)
         print(f"\n{'='*40}")
         print("MOVING 90° CLOCKWISE/UP")
         print('='*40)
         
-        success = self.move_both_motors(90, 90, 0.001)
+        # Move azimuth
+        print("\nMoving azimuth motor...")
+        self.move_azimuth_effective(90, 0.001)
         
-        if not success:
-            print("⚠ Movement failed!")
-            return
+        # Move altitude
+        print("\nMoving altitude motor...")
+        self.move_altitude_effective(90, 0.001)
         
         print("⏸ Pausing 2 seconds...")
         time.sleep(2)
@@ -223,47 +174,134 @@ class CorrectMotorTest:
         print("MOVING 90° COUNTERCLOCKWISE/DOWN")
         print('='*40)
         
-        success = self.move_both_motors(-90, -90, 0.001)
+        # Move azimuth back
+        print("\nMoving azimuth motor back...")
+        self.move_azimuth_effective(-90, 0.001)
         
-        if not success:
-            print("⚠ Movement failed!")
-            return
+        # Move altitude back
+        print("\nMoving altitude motor back...")
+        self.move_altitude_effective(-90, 0.001)
         
         print(f"\n{'='*40}")
         print("✓ TEST COMPLETE!")
-        print("  Both motors should have moved exactly 90° each way")
         print('='*40)
         
         # Turn off motors
         self.shift_out(0b00000000)
         print("Motors turned off.")
     
-    def run_individual_tests(self):
-        """Test each motor individually"""
+    def run_simple_fixed_test(self):
+        """Simple fixed test: Use same step count for both motors"""
         print("\n" + "="*60)
-        print("INDIVIDUAL MOTOR TESTS")
+        print("SIMPLE FIXED TEST - 256 STEPS FOR BOTH MOTORS")
+        print("="*60)
+        print("Using 256 steps for 90° movement (simple approach)")
+        print("This should make both motors move the same amount")
         print("="*60)
         
-        print("\n1. Testing AZIMUTH motor only:")
-        print("   Moving 45° right, then 45° left")
-        input("   Press Enter to start...")
+        steps_90 = 256  # Simple fixed value
         
-        self.move_azimuth_degrees(45, 0.001)
-        print("⏸ Pausing 1 second...")
-        time.sleep(1)
-        self.move_azimuth_degrees(-45, 0.001)
+        input("Press Enter to start...")
         
-        print("\n2. Testing ALTITUDE motor only:")
-        print("   Moving 45° up, then 45° down")
-        input("   Press Enter to start...")
+        # Move forward
+        print(f"\nMoving 90° FORWARD ({steps_90} steps each)...")
         
-        self.move_altitude_degrees(45, 0.001)
-        print("⏸ Pausing 1 second...")
-        time.sleep(1)
-        self.move_altitude_degrees(-45, 0.001)
+        # Move azimuth
+        print("Azimuth motor...")
+        for i in range(steps_90):
+            self.azimuth_step_idx = (self.azimuth_step_idx + 1) % 4
+            self.update_motors()
+            time.sleep(0.001)
         
-        print("\n✓ Individual tests complete")
+        # Move altitude
+        print("Altitude motor...")
+        for i in range(steps_90):
+            self.altitude_step_idx = (self.altitude_step_idx + 1) % 4
+            self.update_motors()
+            time.sleep(0.001)
+        
+        print("⏸ Pausing 2 seconds...")
+        time.sleep(2)
+        
+        # Move backward
+        print(f"\nMoving 90° BACKWARD ({steps_90} steps each)...")
+        
+        # Move azimuth back
+        print("Azimuth motor back...")
+        for i in range(steps_90):
+            self.azimuth_step_idx = (self.azimuth_step_idx - 1) % 4
+            self.update_motors()
+            time.sleep(0.001)
+        
+        # Move altitude back
+        print("Altitude motor back...")
+        for i in range(steps_90):
+            self.altitude_step_idx = (self.altitude_step_idx - 1) % 4
+            self.update_motors()
+            time.sleep(0.001)
+        
+        print(f"\n{'='*40}")
+        print("✓ TEST COMPLETE!")
+        print('='*40)
+        
         self.shift_out(0b00000000)
+    
+    def run_diagnostic_test(self):
+        """Diagnostic test to find correct step count"""
+        print("\n" + "="*60)
+        print("DIAGNOSTIC TEST - FIND CORRECT STEP COUNT")
+        print("="*60)
+        print("We'll test different step counts to find what works")
+        print("="*60)
+        
+        test_cases = [
+            (64, "Very small movement"),
+            (128, "Small movement"),
+            (256, "Expected 90°"),
+            (512, "180°"),
+            (1024, "360° (full circle)"),
+        ]
+        
+        for steps, description in test_cases:
+            print(f"\n{'='*40}")
+            print(f"Testing: {steps} steps ({description})")
+            print('='*40)
+            
+            proceed = input(f"Test {steps} steps? (y/n): ").strip().lower()
+            if proceed != 'y':
+                continue
+            
+            print(f"\nMoving azimuth {steps} steps forward...")
+            for i in range(steps):
+                self.azimuth_step_idx = (self.azimuth_step_idx + 1) % 4
+                self.update_motors()
+                time.sleep(0.001)
+            
+            input(f"Azimuth moved {steps} steps. How far did it move? (Press Enter when ready)")
+            
+            print(f"\nMoving azimuth {steps} steps back...")
+            for i in range(steps):
+                self.azimuth_step_idx = (self.azimuth_step_idx - 1) % 4
+                self.update_motors()
+                time.sleep(0.001)
+            
+            print(f"\nNow testing altitude with {steps} steps...")
+            print(f"Moving altitude {steps} steps up...")
+            for i in range(steps):
+                self.altitude_step_idx = (self.altitude_step_idx + 1) % 4
+                self.update_motors()
+                time.sleep(0.001)
+            
+            input(f"Altitude moved {steps} steps. How far did it move? (Press Enter when ready)")
+            
+            print(f"\nMoving altitude {steps} steps down...")
+            for i in range(steps):
+                self.altitude_step_idx = (self.altitude_step_idx - 1) % 4
+                self.update_motors()
+                time.sleep(0.001)
+            
+            self.shift_out(0b00000000)
+            print(f"✓ {steps} step test complete")
     
     def cleanup(self):
         """Clean up GPIO"""
@@ -274,36 +312,33 @@ class CorrectMotorTest:
 def main():
     """Main function"""
     print("="*70)
-    print("CORRECTED MOTOR TEST - PRECISE 90° MOVEMENT")
+    print("FINAL MOTOR TEST - MATCHING STEP COUNTS")
     print("="*70)
-    print("This fixes the step calculation issue:")
-    print(f"  • 90° azimuth = (90/360) × 1024 = 256 steps")
-    print(f"  • 90° altitude = (90/360) × 4096 = 1024 steps")
-    print("\nThe altitude motor should move 4× more steps than azimuth")
-    print("for the same angular distance (90°).")
+    print("Problem: Altitude moves 2× too far, azimuth barely moves")
+    print("Solution: Use same step count for both motors")
     print("="*70)
     
     tester = None
     try:
-        tester = CorrectMotorTest()
+        tester = FinalMotorTest()
         
         while True:
             print("\n" + "="*70)
             print("TEST MENU")
             print("="*70)
-            print("1. Run precise 90° test (both motors together)")
-            print("2. Test motors individually (45° movements)")
-            print("3. Test single steps (debug wiring)")
+            print("1. Run matched 90° test (calculated steps)")
+            print("2. Run simple fixed test (256 steps for both)")
+            print("3. Run diagnostic test (find correct step count)")
             print("4. Exit")
             
             choice = input("\nEnter choice (1-4): ").strip()
             
             if choice == "1":
-                tester.run_precise_90_test()
+                tester.run_matched_90_test()
             elif choice == "2":
-                tester.run_individual_tests()
+                tester.run_simple_fixed_test()
             elif choice == "3":
-                tester.test_single_step()
+                tester.run_diagnostic_test()
             elif choice == "4":
                 print("Exiting...")
                 break
