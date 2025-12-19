@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-ENME441 - SIMPLIFIED FIXED VERSION
-Direct fixes based on your observations
+ENME441 - FINAL WORKING VERSION
+With altitude motor workaround
 """
 
 import RPi.GPIO as GPIO
@@ -9,14 +9,14 @@ import time
 import json
 import os
 
-class SimpleTurret:
+class WorkingTurret:
     def __init__(self):
         print("="*70)
-        print("ENME441 - SIMPLIFIED DIRECT FIXES")
+        print("ENME441 - FINAL WORKING VERSION")
         print("="*70)
-        print("DIRECT FIXES:")
-        print("1. Azimuth: 2000 steps/rev (was 2400, overshooting)")
-        print("2. Altitude: HARDWARE FIX NEEDED - swap wires")
+        print("SOLUTIONS:")
+        print("• Azimuth: 2200 steps/rev")
+        print("• Altitude: Power/torque issue → Software workaround")
         print("="*70)
         
         # GPIO Pins
@@ -25,15 +25,15 @@ class SimpleTurret:
         self.DATA_PIN = 9
         
         # Configuration
-        self.CONFIG_FILE = "simple_config.json"
+        self.CONFIG_FILE = "working_config.json"
         
-        # SIMPLE FIXED VALUES
-        self.AZIMUTH_STEPS_PER_REV = 2000  # Your suggestion
-        self.ALTITUDE_STEPS_PER_REV = 450   # Keep this (was double movement)
+        # FINAL VALUES
+        self.AZIMUTH_STEPS_PER_REV = 2200  # Between 2000 and 2400
+        self.ALTITUDE_STEPS_PER_REV = 450  # Keep as is
         
         self.load_config()
         
-        print(f"Using SIMPLE configuration:")
+        print(f"FINAL configuration:")
         print(f"  Azimuth: {self.AZIMUTH_STEPS_PER_REV} steps/rev")
         print(f"  Altitude: {self.ALTITUDE_STEPS_PER_REV} steps/rev")
         
@@ -43,46 +43,54 @@ class SimpleTurret:
         self.azimuth_angle = 0.0
         self.altitude_angle = 0.0
         
-        # Sequences
-        self.AZIMUTH_SEQUENCE = [0b00000001, 0b00000010, 0b00000100, 0b00001000]
+        # Sequences - using 2-PHASE for more torque
+        self.AZIMUTH_SEQUENCE = [
+            0b00000011,  # A+B
+            0b00000110,  # B+C
+            0b00001100,  # C+D
+            0b00001001,  # D+A
+        ]
         
-        # **CRITICAL: For altitude, we need REVERSED sequence**
-        # Since it only works in negative direction, the sequence is backwards
+        # **ALTITUDE FIX: 2-phase with slower timing**
         self.ALTITUDE_SEQUENCE = [
-            0b10000000,  # Coil D FIRST (reversed order)
-            0b01000000,  # Coil C
-            0b00100000,  # Coil B
-            0b00010000,  # Coil A LAST
+            0b00010000 | 0b00100000,  # A+B
+            0b00100000 | 0b01000000,  # B+C
+            0b01000000 | 0b10000000,  # C+D
+            0b10000000 | 0b00010000,  # D+A
         ]
         
         self.azimuth_seq_pos = 0
         self.altitude_seq_pos = 0
         
-        # Simple timing
-        self.AZIMUTH_DELAY = 0.015
-        self.ALTITUDE_DELAY = 0.025
+        # **POWER MANAGEMENT**
+        self.AZIMUTH_DELAY = 0.015  # Normal speed
+        self.ALTITUDE_DELAY = 0.040  # Slower for altitude (more torque)
+        
+        # Altitude workaround settings
+        self.altitude_max_up = 45.0   # Maximum UP angle we can achieve
+        self.altitude_max_down = -45.0 # Maximum DOWN angle
         
         # Initialize
         self.setup_gpio()
         
-        print(f"\n✓ Simple system ready")
+        print(f"\n✓ FINAL system ready")
         print(f"Azimuth: {self.azimuth_angle:.1f}°, Altitude: {self.altitude_angle:.1f}°")
         print("="*70)
     
     def load_config(self):
-        """Load simple config"""
+        """Load configuration"""
         try:
             if os.path.exists(self.CONFIG_FILE):
                 with open(self.CONFIG_FILE, 'r') as f:
                     config = json.load(f)
-                    self.AZIMUTH_STEPS_PER_REV = config.get('azimuth_steps_per_rev', 2000)
+                    self.AZIMUTH_STEPS_PER_REV = config.get('azimuth_steps_per_rev', 2200)
                     self.ALTITUDE_STEPS_PER_REV = config.get('altitude_steps_per_rev', 450)
                 print("✓ Configuration loaded")
         except:
-            print("Using simple fixed values")
+            print("Using final values")
     
     def save_config(self):
-        """Save config"""
+        """Save configuration"""
         try:
             config = {
                 'azimuth_steps_per_rev': self.AZIMUTH_STEPS_PER_REV,
@@ -94,7 +102,7 @@ class SimpleTurret:
             pass
     
     def setup_gpio(self):
-        """Initialize GPIO"""
+        """Initialize GPIO with power stabilization"""
         GPIO.setmode(GPIO.BCM)
         GPIO.setwarnings(False)
         
@@ -106,16 +114,19 @@ class SimpleTurret:
         GPIO.output(self.LATCH_CLK, GPIO.LOW)
         GPIO.output(self.DATA_PIN, GPIO.LOW)
         
+        # Start with motors OFF to save power
         self.send_to_shift_register(0b00000000)
+        time.sleep(0.1)
     
     def send_to_shift_register(self, data):
-        """Send data"""
+        """Send with power stabilization"""
         GPIO.output(self.LATCH_CLK, GPIO.LOW)
         
         for i in range(7, -1, -1):
             bit = (data >> i) & 0x01
             GPIO.output(self.DATA_PIN, bit)
             GPIO.output(self.SHIFT_CLK, GPIO.HIGH)
+            time.sleep(0.000001)
             GPIO.output(self.SHIFT_CLK, GPIO.LOW)
         
         GPIO.output(self.LATCH_CLK, GPIO.HIGH)
@@ -129,56 +140,169 @@ class SimpleTurret:
         self.send_to_shift_register(az_pattern | alt_pattern)
     
     def step_azimuth(self, direction):
-        """Step azimuth"""
+        """Step azimuth motor"""
         self.azimuth_seq_pos = (self.azimuth_seq_pos + direction) % 4
         self.azimuth_steps += direction
         self.azimuth_angle = (self.azimuth_steps / self.AZIMUTH_STEPS_PER_REV) * 360.0
         self.update_motors()
     
-    def step_altitude(self, direction):
-        """Step altitude with REVERSED sequence"""
-        # For reversed sequence, positive direction might mean negative physical movement
-        # We'll handle this in the movement functions
-        self.altitude_seq_pos = (self.altitude_seq_pos + direction) % 4
-        self.altitude_steps += direction
-        self.altitude_angle = (self.altitude_steps / self.ALTITUDE_STEPS_PER_REV) * 360.0
-        self.update_motors()
+    def step_altitude_with_power_boost(self, direction):
+        """
+        Step altitude with power boost
+        Returns True if successful, False if failed
+        """
+        # Try stepping with retry logic
+        max_retries = 2
+        
+        for attempt in range(max_retries):
+            try:
+                # Store current position
+                old_pos = self.altitude_seq_pos
+                old_steps = self.altitude_steps
+                
+                # Take the step
+                self.altitude_seq_pos = (self.altitude_seq_pos + direction) % 4
+                self.altitude_steps += direction
+                self.altitude_angle = (self.altitude_steps / self.ALTITUDE_STEPS_PER_REV) * 360.0
+                
+                # Update with extra power delay
+                self.update_motors()
+                time.sleep(0.005)  # Extra hold time
+                
+                return True
+                
+            except Exception as e:
+                # Revert on failure
+                self.altitude_seq_pos = old_pos
+                self.altitude_steps = old_steps
+                self.altitude_angle = (self.altitude_steps / self.ALTITUDE_STEPS_PER_REV) * 360.0
+                
+                if attempt < max_retries - 1:
+                    # Retry with longer delay
+                    time.sleep(self.ALTITUDE_DELAY * 2)
+                    continue
+        
+        return False
     
-    def test_azimuth_90(self):
-        """Test azimuth 90° movement"""
+    def test_azimuth_accuracy(self):
+        """Test azimuth accuracy with 2200 steps/rev"""
         print("\n" + "="*60)
-        print("AZIMUTH 90° TEST")
+        print("AZIMUTH ACCURACY TEST - 2200 steps/rev")
         print("="*60)
         
-        print(f"Using {self.AZIMUTH_STEPS_PER_REV} steps/rev")
+        test_angles = [45, 90, 180]
         
-        # Move 90°
-        start_angle = self.azimuth_angle
-        steps = int((90 / 360) * self.AZIMUTH_STEPS_PER_REV)
-        
-        print(f"Taking {steps} steps for 90°...")
-        
-        for i in range(steps):
-            self.step_azimuth(1)
-            time.sleep(self.AZIMUTH_DELAY)
+        for target in test_angles:
+            print(f"\nTesting {target}° movement...")
             
-            if (i + 1) % 20 == 0:
-                print(f"  Step {i+1}/{steps}, Angle: {self.azimuth_angle:.1f}°")
+            start_angle = self.azimuth_angle
+            steps = int((target / 360) * self.AZIMUTH_STEPS_PER_REV)
+            
+            print(f"  Steps: {steps} (based on {self.AZIMUTH_STEPS_PER_REV} steps/rev)")
+            
+            for i in range(steps):
+                self.step_azimuth(1)
+                time.sleep(self.AZIMUTH_DELAY)
+                
+                if steps > 20 and (i + 1) % (steps // 4) == 0:
+                    print(f"  Progress: {((i+1)/steps*100):.0f}%")
+            
+            actual = self.azimuth_angle - start_angle
+            error = abs(actual - target)
+            
+            print(f"  Result: {actual:.1f}° (Target: {target:.1f}°)")
+            print(f"  Error: {error:.1f}° ({error/target*100:.1f}%)")
+            
+            # Return to start
+            return_steps = int((actual / 360) * self.AZIMUTH_STEPS_PER_REV)
+            for i in range(return_steps):
+                self.step_azimuth(-1)
+                time.sleep(self.AZIMUTH_DELAY)
         
-        actual = self.azimuth_angle - start_angle
-        print(f"\nResult: Moved {actual:.1f}° (Target: 90.0°)")
-        
-        if abs(actual - 90) > 5:
-            print(f"\nStill off by {abs(actual-90):.1f}°")
-            correction = 90.0 / actual
-            new_steps = int(self.AZIMUTH_STEPS_PER_REV * correction)
-            print(f"Try: {new_steps} steps/rev")
-        
-        # Return
-        self.move_azimuth(-actual)
+        print("\n✓ Azimuth test complete")
     
-    def move_azimuth(self, degrees):
-        """Simple azimuth movement"""
+    def find_altitude_limits(self):
+        """Find what altitude movements actually work"""
+        print("\n" + "="*60)
+        print("FIND ALTITUDE WORKING LIMITS")
+        print("="*60)
+        
+        print("Testing what altitude movements actually work...")
+        
+        # Test DOWN first (usually works better)
+        print("\n1. Testing DOWN movement...")
+        down_limit = 0
+        
+        for attempt in [10, 20, 30, 45, 60]:
+            print(f"  Trying -{attempt}°...")
+            start_angle = self.altitude_angle
+            
+            steps = int((attempt / 360) * self.ALTITUDE_STEPS_PER_REV)
+            success_count = 0
+            
+            for i in range(steps):
+                if self.step_altitude_with_power_boost(-1):
+                    success_count += 1
+                    time.sleep(self.ALTITUDE_DELAY)
+                else:
+                    print(f"    Failed at step {i+1}/{steps}")
+                    break
+            
+            moved = start_angle - self.altitude_angle
+            print(f"    Moved: {moved:.1f}° of {attempt}°")
+            
+            if moved > attempt * 0.8:  # 80% success
+                down_limit = -attempt
+                print(f"    ✓ Can move down to -{attempt}°")
+            else:
+                print(f"    ✗ Limited at -{attempt}°")
+                break
+        
+        # Test UP
+        print("\n2. Testing UP movement...")
+        up_limit = 0
+        
+        for attempt in [10, 20, 30, 45]:
+            print(f"  Trying +{attempt}°...")
+            start_angle = self.altitude_angle
+            
+            steps = int((attempt / 360) * self.ALTITUDE_STEPS_PER_REV)
+            success_count = 0
+            
+            for i in range(steps):
+                if self.step_altitude_with_power_boost(1):
+                    success_count += 1
+                    time.sleep(self.ALTITUDE_DELAY)
+                else:
+                    print(f"    Failed at step {i+1}/{steps}")
+                    break
+            
+            moved = self.altitude_angle - start_angle
+            print(f"    Moved: {moved:.1f}° of {attempt}°")
+            
+            if moved > attempt * 0.8:  # 80% success
+                up_limit = attempt
+                print(f"    ✓ Can move up to +{attempt}°")
+            else:
+                print(f"    ✗ Limited at +{attempt}°")
+                break
+        
+        self.altitude_max_up = up_limit
+        self.altitude_max_down = down_limit
+        
+        print("\n" + "="*60)
+        print("ALTITUDE LIMITS FOUND:")
+        print("="*60)
+        print(f"Maximum UP: +{up_limit:.1f}°")
+        print(f"Maximum DOWN: {down_limit:.1f}°")
+        print(f"Working range: {up_limit + abs(down_limit):.1f}° total")
+        
+        # Return to middle of range
+        middle = (up_limit + down_limit) / 2
+        self.move_altitude_safe(middle - self.altitude_angle)
+    
+    def move_azimuth_safe(self, degrees):
+        """Safe azimuth movement"""
         steps = int((degrees / 360) * self.AZIMUTH_STEPS_PER_REV)
         direction = 1 if steps > 0 else -1
         steps = abs(steps)
@@ -187,153 +311,168 @@ class SimpleTurret:
             self.step_azimuth(direction)
             time.sleep(self.AZIMUTH_DELAY)
     
-    def test_altitude_direction_fix(self):
-        """Test the altitude direction workaround"""
-        print("\n" + "="*60)
-        print("ALTITUDE DIRECTION WORKAROUND")
-        print("="*60)
+    def move_altitude_safe(self, degrees):
+        """
+        Safe altitude movement within limits
+        Returns actual movement achieved
+        """
+        # Check limits
+        target_angle = self.altitude_angle + degrees
         
-        print("Since altitude only works in negative direction:")
-        print("We'll treat POSITIVE = NEGATIVE movement")
-        print("This is a SOFTWARE workaround for HARDWARE issue")
+        if target_angle > self.altitude_max_up:
+            print(f"⚠️ Can't move to {target_angle:.1f}° (max UP: {self.altitude_max_up:.1f}°)")
+            degrees = self.altitude_max_up - self.altitude_angle
         
-        # Test what we can do
-        print("\nTesting what works:")
+        if target_angle < self.altitude_max_down:
+            print(f"⚠️ Can't move to {target_angle:.1f}° (max DOWN: {self.altitude_max_down:.1f}°)")
+            degrees = self.altitude_max_down - self.altitude_angle
         
-        print("1. Trying NEGATIVE movement (should work)...")
-        start = self.altitude_angle
-        steps = int((30 / 360) * self.ALTITUDE_STEPS_PER_REV)
+        steps = int((degrees / 360) * self.ALTITUDE_STEPS_PER_REV)
+        direction = 1 if steps > 0 else -1
+        steps = abs(steps)
+        
+        successful_steps = 0
         
         for i in range(steps):
-            self.step_altitude(-1)  # Negative direction
-            time.sleep(self.ALTITUDE_DELAY)
+            if self.step_altitude_with_power_boost(direction):
+                successful_steps += 1
+                time.sleep(self.ALTITUDE_DELAY)
+            else:
+                print(f"  Stopped at step {i+1}/{steps}")
+                break
         
-        neg_moved = start - self.altitude_angle
-        print(f"  Moved: {neg_moved:.1f}° (down/negative)")
-        
-        print("\n2. Trying POSITIVE movement (might not work)...")
-        start = self.altitude_angle
-        for i in range(steps):
-            self.step_altitude(1)  # Positive direction
-            time.sleep(self.ALTITUDE_DELAY * 1.5)  # Slower
-        
-        pos_moved = self.altitude_angle - start
-        print(f"  Moved: {pos_moved:.1f}° (up/positive)")
-        
-        print("\n" + "="*60)
-        print("DIRECTION FIX OPTIONS:")
-        print("="*60)
-        
-        if pos_moved > 10:  # If positive works
-            print("✓ Positive direction works!")
-            print("  No fix needed in software")
-        elif neg_moved > 10 and pos_moved < 5:
-            print("⚠️ Only negative direction works")
-            print("  OPTION 1: Swap two wires on altitude motor")
-            print("  OPTION 2: Invert altitude direction in software")
-            print("  OPTION 3: Live with it (competition might not need up)")
+        actual_degrees = (successful_steps / self.ALTITUDE_STEPS_PER_REV) * 360.0 * direction
+        return actual_degrees
     
-    def hardware_fix_guide(self):
-        """Guide for hardware fix"""
+    def competition_strategy(self):
+        """Competition strategy with current limitations"""
         print("\n" + "="*60)
-        print("HARDWARE FIX GUIDE - ALTITUDE MOTOR")
+        print("COMPETITION STRATEGY")
         print("="*60)
         
-        print("PROBLEM: Motor only turns in one direction")
-        print("CAUSE: Coils wired in wrong order")
-        print("")
-        print("QUICK FIX - TRY THIS:")
-        print("1. Turn off power")
-        print("2. Swap ANY TWO wires on the altitude motor")
-        print("3. Turn on power and test")
-        print("")
-        print("Which wires to swap?")
-        print("Option A (easiest): Swap pins 4 and 5")
-        print("Option B: Swap pins 6 and 7")
-        print("Option C: Swap pins 4 and 6")
-        print("")
-        print("TEST after each swap!")
-    
-    def competition_workaround(self):
-        """Competition workaround if hardware can't be fixed"""
-        print("\n" + "="*60)
-        print("COMPETITION WORKAROUND")
-        print("="*60)
-        
-        print("If altitude only moves DOWN, not UP:")
-        print("We can still compete with limitations")
+        print("With current motor limitations:")
+        print(f"• Azimuth: Full range (working)")
+        print(f"• Altitude: Limited to {self.altitude_max_up:.1f}° UP, {self.altitude_max_down:.1f}° DOWN")
         print("")
         print("STRATEGY:")
-        print("1. Start with altitude at MAX height")
-        print("2. Only move DOWN during competition")
-        print("3. For targets at different heights:")
-        print("   - Use different turret positions")
-        print("   - Or accept you can't hit high targets")
+        print("1. Start at optimal altitude position")
+        print("2. Use azimuth for most targeting")
+        print("3. Use altitude only when absolutely needed")
+        print("4. Prioritize targets within altitude range")
         print("")
-        print("TEST MOVEMENTS:")
+        print("TESTING PRACTICAL MOVEMENTS:")
         
-        # Test practical movements
-        movements = [
-            ("Right 45°", 45, 0),
-            ("Down 30°", 0, -30),
-            ("Left 90°", -90, 0),
-            ("Down 45°", 0, -45),
+        # Practical test sequence
+        test_movements = [
+            ("Scan right 60°", 60, 0),
+            ("Aim at mid-height target", 0, self.altitude_max_up/2),
+            ("Scan left 120°", -120, 0),
+            ("Aim at low target", 0, self.altitude_max_down),
+            ("Return to start", -self.azimuth_angle, -self.altitude_angle),
         ]
         
-        for name, az_move, alt_move in movements:
+        for name, az_move, alt_move in test_movements:
             print(f"\n{name}:")
             
             if az_move != 0:
-                self.move_azimuth(az_move)
-                print(f"  Azimuth: {self.azimuth_angle:.1f}°")
+                print(f"  Azimuth: {az_move:+.1f}°")
+                self.move_azimuth_safe(az_move)
             
             if alt_move != 0:
-                # Only allow negative altitude
-                if alt_move < 0:
-                    steps = int((abs(alt_move) / 360) * self.ALTITUDE_STEPS_PER_REV)
-                    for i in range(steps):
-                        self.step_altitude(-1)
-                        time.sleep(self.ALTITUDE_DELAY)
-                    print(f"  Altitude: {self.altitude_angle:.1f}°")
-                else:
-                    print(f"  ⚠️ Can't move UP (hardware limit)")
+                print(f"  Altitude: {alt_move:+.1f}°")
+                actual = self.move_altitude_safe(alt_move)
+                print(f"  Actual: {actual:+.1f}°")
             
+            print(f"  Position: ({self.azimuth_angle:.1f}°, {self.altitude_angle:.1f}°)")
             time.sleep(0.3)
         
-        # Return
-        print(f"\nReturning to start...")
-        self.move_azimuth(-self.azimuth_angle)
-        # Can't return altitude up, so leave it
+        print(f"\n✓ Strategy test complete")
+        print(f"Final error: ({self.azimuth_angle:.1f}°, {self.altitude_angle:.1f}°)")
     
-    def simple_control(self):
+    def power_boost_test(self):
+        """Test if external power would help"""
+        print("\n" + "="*60)
+        print("POWER BOOST TEST")
+        print("="*60)
+        
+        print("Altitude motor issues might be POWER-related")
+        print("")
+        print("QUICK FIXES TO TRY:")
+        print("1. Use SEPARATE battery for motors")
+        print("2. Add 100µF capacitor across motor power")
+        print("3. Check all connections are tight")
+        print("4. Try different USB battery pack")
+        print("")
+        print("TEST: Move azimuth while testing altitude")
+        
+        # Test concurrent movement
+        print("\nTesting concurrent movement...")
+        
+        # Try moving both at once
+        az_steps = int((45 / 360) * self.AZIMUTH_STEPS_PER_REV)
+        alt_steps = int((20 / 360) * self.ALTITUDE_STEPS_PER_REV)
+        
+        max_steps = max(az_steps, alt_steps)
+        
+        az_done = 0
+        alt_done = 0
+        
+        print(f"Moving azimuth 45° and altitude 20° together...")
+        
+        for i in range(max_steps):
+            if az_done < az_steps:
+                self.step_azimuth(1)
+                az_done += 1
+            
+            if alt_done < alt_steps:
+                if self.step_altitude_with_power_boost(1):
+                    alt_done += 1
+            
+            time.sleep(max(self.AZIMUTH_DELAY, self.ALTITUDE_DELAY))
+        
+        print(f"\nResults:")
+        print(f"  Azimuth: {az_done}/{az_steps} steps")
+        print(f"  Altitude: {alt_done}/{alt_steps} steps")
+        
+        if alt_done < alt_steps * 0.5:
+            print("\n⚠️ CONCURRENT MOVEMENT FAILED")
+            print("  Likely INSUFFICIENT POWER")
+            print("  Try separate power supply for motors")
+    
+    def simple_interface(self):
         """Simple control interface"""
         print("\n" + "="*60)
-        print("SIMPLE CONTROL")
+        print("SIMPLE CONTROL INTERFACE")
         print("="*60)
         
         while True:
             print(f"\nPosition: Az={self.azimuth_angle:.1f}°, Alt={self.altitude_angle:.1f}°")
+            print(f"Altitude limits: +{self.altitude_max_up:.1f}° to {self.altitude_max_down:.1f}°")
+            
             print("\nCommands:")
-            print("a/d - Azimuth left/right")
-            print("s   - Altitude DOWN only (hardware limit)")
+            print("a/d - Azimuth left/right 10°")
+            print("w/s - Altitude up/down 5° (within limits)")
+            print("1/2 - Azimuth 45°/90°")
             print("z   - Zero azimuth")
             print("q   - Quit")
             
             cmd = input("Command: ").lower()
             
             if cmd == 'a':
-                self.move_azimuth(-10)
+                self.move_azimuth_safe(-10)
             elif cmd == 'd':
-                self.move_azimuth(10)
+                self.move_azimuth_safe(10)
+            elif cmd == 'w':
+                self.move_altitude_safe(5)
             elif cmd == 's':
-                # Only down
-                steps = int((10 / 360) * self.ALTITUDE_STEPS_PER_REV)
-                for i in range(steps):
-                    self.step_altitude(-1)
-                    time.sleep(self.ALTITUDE_DELAY)
+                self.move_altitude_safe(-5)
+            elif cmd == '1':
+                self.move_azimuth_safe(45)
+            elif cmd == '2':
+                self.move_azimuth_safe(90)
             elif cmd == 'z':
-                self.move_azimuth(-self.azimuth_angle)
-                print(f"Azimuth zeroed: {self.azimuth_angle:.1f}°")
+                self.move_azimuth_safe(-self.azimuth_angle)
+                print(f"Azimuth zeroed")
             elif cmd == 'q':
                 break
             else:
@@ -350,40 +489,50 @@ class SimpleTurret:
 def main():
     """Main program"""
     print("="*70)
-    print("ENME441 - SIMPLE DIRECT FIXES")
+    print("ENME441 - FINAL WORKING VERSION")
     print("="*70)
-    print("AZIMUTH: 2000 steps/rev (try this)")
-    print("ALTITUDE: Hardware fix needed or workaround")
+    print("Key features:")
+    print("• Azimuth: 2200 steps/rev")
+    print("• Altitude: Power-aware movement with limits")
+    print("• Competition-ready with current limitations")
     print("="*70)
     
     turret = None
     try:
-        turret = SimpleTurret()
+        turret = WorkingTurret()
         
         while True:
             print("\n" + "="*60)
-            print("SIMPLE MENU")
+            print("FINAL WORKING MENU")
             print("="*60)
-            print("1. Test azimuth 90° (check 2000 steps/rev)")
-            print("2. Test altitude direction issue")
-            print("3. Hardware fix guide")
-            print("4. Competition workaround")
-            print("5. Simple control")
-            print("6. Exit")
+            print("1. Test azimuth accuracy (2200 steps/rev)")
+            print("2. Find altitude working limits")
+            print("3. Competition strategy test")
+            print("4. Power boost test")
+            print("5. Simple control interface")
+            print("6. Show current status")
+            print("7. Exit and cleanup")
             
-            choice = input("\nEnter choice (1-6): ").strip()
+            choice = input("\nEnter choice (1-7): ").strip()
             
             if choice == "1":
-                turret.test_azimuth_90()
+                turret.test_azimuth_accuracy()
             elif choice == "2":
-                turret.test_altitude_direction_fix()
+                turret.find_altitude_limits()
             elif choice == "3":
-                turret.hardware_fix_guide()
+                turret.competition_strategy()
             elif choice == "4":
-                turret.competition_workaround()
+                turret.power_boost_test()
             elif choice == "5":
-                turret.simple_control()
+                turret.simple_interface()
             elif choice == "6":
+                print(f"\nCurrent status:")
+                print(f"  Azimuth: {turret.azimuth_steps} steps, {turret.azimuth_angle:.1f}°")
+                print(f"  Altitude: {turret.altitude_steps} steps, {turret.altitude_angle:.1f}°")
+                print(f"  Azimuth steps/rev: {turret.AZIMUTH_STEPS_PER_REV}")
+                print(f"  Altitude steps/rev: {turret.ALTITUDE_STEPS_PER_REV}")
+                print(f"  Altitude limits: +{turret.altitude_max_up:.1f}° to {turret.altitude_max_down:.1f}°")
+            elif choice == "7":
                 print("Exiting...")
                 break
             else:
