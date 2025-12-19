@@ -1,7 +1,5 @@
-#!/usr/bin/env python3
 """
-ENME441 - FINAL WORKING VERSION
-With altitude motor workaround and competition features
+ENME441 - MIKE WANG
 """
 
 import RPi.GPIO as GPIO
@@ -13,9 +11,6 @@ import urllib.request
 
 class WorkingTurret:
     def __init__(self):
-        print("="*70)
-        print("ENME441 COURSE PROJECT - MIKE WANG")
-        print("="*70)
         
         # GPIO Pins
         self.SHIFT_CLK = 11
@@ -32,9 +27,8 @@ class WorkingTurret:
         
         self.load_config()
         
-        print(f"FINAL configuration:")
-        print(f"  Azimuth: {self.AZIMUTH_STEPS_PER_REV} steps/rev")
-        print(f"  Altitude: {self.ALTITUDE_STEPS_PER_REV} steps/rev")
+        # print(f"  Azimuth: {self.AZIMUTH_STEPS_PER_REV} steps/rev")
+        # print(f"  Altitude: {self.ALTITUDE_STEPS_PER_REV} steps/rev")
         
         # Current state
         self.azimuth_steps = 0
@@ -82,9 +76,8 @@ class WorkingTurret:
         # Initialize
         self.setup_gpio()
         
-        print(f"\nFINAL system ready")
         print(f"Azimuth: {self.azimuth_angle:.1f}°, Altitude: {self.altitude_angle:.1f}°")
-        print(f"Laser: OFF (GPIO{self.LASER_PIN})")
+        print(f"Laser: OFF")
         print(f"Laser offset: {self.laser_height*100:.1f} cm height, {self.laser_offset_x*100:.1f} cm right")
         print("="*70)
     
