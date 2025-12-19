@@ -10,7 +10,6 @@ import json
 import os
 import math
 import urllib.request
-import threading
 
 class WorkingTurret:
     def __init__(self):
@@ -21,13 +20,14 @@ class WorkingTurret:
         print("• Azimuth: 2200 steps/rev")
         print("• Altitude: Power/torque issue → Software workaround")
         print("• Laser: GPIO26 control with offsets")
+        print("• Units: Meters and degrees")
         print("="*70)
         
         # GPIO Pins
         self.SHIFT_CLK = 11
         self.LATCH_CLK = 10
         self.DATA_PIN = 9
-        self.LASER_PIN = 26  # Updated laser control pin
+        self.LASER_PIN = 26  # Laser control pin
         
         # Configuration
         self.CONFIG_FILE = "working_config.json"
@@ -45,8 +45,8 @@ class WorkingTurret:
         # Current state
         self.azimuth_steps = 0
         self.altitude_steps = 0
-        self.azimuth_angle = 0.0
-        self.altitude_angle = 0.0
+        self.azimuth_angle = 0.0  # degrees
+        self.altitude_angle = 0.0  # degrees
         self.laser_on = False
         
         # Origin offset tracking
@@ -80,10 +80,10 @@ class WorkingTurret:
         self.altitude_max_up = 45.0   # Maximum UP angle we can achieve
         self.altitude_max_down = -45.0 # Maximum DOWN angle
         
-        # Turret physical properties (in cm)
-        self.turret_radius = 300.0  # cm - distance from center
-        self.laser_height = 4.3     # cm - height of laser above ground (43 mm)
-        self.laser_offset_x = 2.7   # cm - horizontal offset from azimuth shaft to laser (27 mm)
+        # Turret physical properties (in meters)
+        self.turret_radius = 3.0      # meters - distance from center
+        self.laser_height = 0.043     # meters - height of laser above ground (43 mm)
+        self.laser_offset_x = 0.027   # meters - horizontal offset from azimuth shaft to laser (27 mm)
         
         # Initialize
         self.setup_gpio()
@@ -91,7 +91,7 @@ class WorkingTurret:
         print(f"\n✓ FINAL system ready")
         print(f"Azimuth: {self.azimuth_angle:.1f}°, Altitude: {self.altitude_angle:.1f}°")
         print(f"Laser: OFF (GPIO{self.LASER_PIN})")
-        print(f"Laser offset: {self.laser_height} cm height, {self.laser_offset_x} cm right")
+        print(f"Laser offset: {self.laser_height*100:.1f} cm height, {self.laser_offset_x*100:.1f} cm right")
         print("="*70)
     
     def load_config(self):
@@ -209,46 +209,6 @@ class WorkingTurret:
         
         return False
     
-    def step_both_motors_simultaneously(self, az_direction, alt_direction):
-        """
-        Step both motors simultaneously
-        Returns (az_success, alt_success)
-        """
-        # Store current positions
-        old_az_pos = self.azimuth_seq_pos
-        old_az_steps = self.azimuth_steps
-        old_alt_pos = self.altitude_seq_pos
-        old_alt_steps = self.altitude_steps
-        
-        try:
-            # Update azimuth
-            self.azimuth_seq_pos = (self.azimuth_seq_pos + az_direction) % 4
-            self.azimuth_steps += az_direction
-            
-            # Update altitude
-            self.altitude_seq_pos = (self.altitude_seq_pos + alt_direction) % 4
-            self.altitude_steps += alt_direction
-            
-            # Update angles
-            self.azimuth_angle = (self.azimuth_steps / self.AZIMUTH_STEPS_PER_REV) * 360.0
-            self.altitude_angle = (self.altitude_steps / self.ALTITUDE_STEPS_PER_REV) * 360.0
-            
-            # Update motors
-            self.update_motors()
-            time.sleep(0.005)  # Extra hold time
-            
-            return True, True
-            
-        except Exception as e:
-            # Revert on failure
-            self.azimuth_seq_pos = old_az_pos
-            self.azimuth_steps = old_az_steps
-            self.altitude_seq_pos = old_alt_pos
-            self.altitude_steps = old_alt_steps
-            self.azimuth_angle = (self.azimuth_steps / self.AZIMUTH_STEPS_PER_REV) * 360.0
-            self.altitude_angle = (self.altitude_steps / self.ALTITUDE_STEPS_PER_REV) * 360.0
-            return False, False
-    
     def move_azimuth_safe(self, degrees):
         """Safe azimuth movement"""
         steps = int((degrees / 360) * self.AZIMUTH_STEPS_PER_REV)
@@ -291,69 +251,6 @@ class WorkingTurret:
         
         actual_degrees = (successful_steps / self.ALTITUDE_STEPS_PER_REV) * 360.0 * direction
         return actual_degrees
-    
-    def move_both_simultaneously(self, az_degrees, alt_degrees):
-        """
-        Move both motors simultaneously
-        Returns actual movements achieved
-        """
-        # Calculate steps for each motor
-        az_steps = int((az_degrees / 360) * self.AZIMUTH_STEPS_PER_REV)
-        alt_steps = int((alt_degrees / 360) * self.ALTITUDE_STEPS_PER_REV)
-        
-        az_direction = 1 if az_steps > 0 else -1
-        alt_direction = 1 if alt_steps > 0 else -1
-        
-        az_steps = abs(az_steps)
-        alt_steps = abs(alt_steps)
-        
-        # Determine maximum steps and ratio
-        max_steps = max(az_steps, alt_steps)
-        az_done = 0
-        alt_done = 0
-        
-        print(f"Moving simultaneously: Az={az_degrees:+.1f}° ({az_steps} steps), Alt={alt_degrees:+.1f}° ({alt_steps} steps)")
-        
-        for i in range(max_steps):
-            az_step_now = (i < az_steps)
-            alt_step_now = (i < alt_steps)
-            
-            if az_step_now and alt_step_now:
-                # Try simultaneous step
-                az_success, alt_success = self.step_both_motors_simultaneously(
-                    az_direction if az_step_now else 0,
-                    alt_direction if alt_step_now else 0
-                )
-                
-                if az_success:
-                    az_done += 1
-                if alt_success:
-                    alt_done += 1
-                    
-                # Use the longer delay for power stability
-                time.sleep(max(self.AZIMUTH_DELAY, self.ALTITUDE_DELAY))
-                
-            elif az_step_now:
-                # Only azimuth
-                self.step_azimuth(az_direction)
-                az_done += 1
-                time.sleep(self.AZIMUTH_DELAY)
-                
-            elif alt_step_now:
-                # Only altitude
-                if self.step_altitude_with_power_boost(alt_direction):
-                    alt_done += 1
-                time.sleep(self.ALTITUDE_DELAY)
-        
-        # Calculate actual movements
-        az_actual = (az_done / self.AZIMUTH_STEPS_PER_REV) * 360.0 * az_direction
-        alt_actual = (alt_done / self.ALTITUDE_STEPS_PER_REV) * 360.0 * alt_direction
-        
-        print(f"Simultaneous movement complete:")
-        print(f"  Azimuth: {az_done}/{az_steps} steps ({az_actual:+.1f}° of {az_degrees:+.1f}°)")
-        print(f"  Altitude: {alt_done}/{alt_steps} steps ({alt_actual:+.1f}° of {alt_degrees:+.1f}°)")
-        
-        return az_actual, alt_actual
     
     def set_calibration_origin(self):
         """Set current position as origin (0,0)"""
@@ -459,7 +356,6 @@ class WorkingTurret:
             print("1 - Set specific angles")
             print("2 - Small movements (Azimuth ±10°, Altitude ±5°)")
             print("3 - Zero azimuth")
-            print("4 - Move both motors simultaneously")
             print("q - Return to main menu")
             
             cmd = input("\nEnter command: ").lower()
@@ -512,31 +408,20 @@ class WorkingTurret:
                 self.move_azimuth_safe(-self.azimuth_angle)
                 print("✓ Azimuth zeroed")
                 
-            elif cmd == '4':
-                # Simultaneous movement
-                try:
-                    az_move = float(input("Enter azimuth movement (degrees): "))
-                    alt_move = float(input("Enter altitude movement (degrees): "))
-                    
-                    print("\nMoving both motors simultaneously...")
-                    az_actual, alt_actual = self.move_both_simultaneously(az_move, alt_move)
-                    
-                    print(f"✓ Simultaneous movement complete")
-                    print(f"  Final: Az={self.azimuth_angle:.1f}°, Alt={self.altitude_angle:.1f}°")
-                    
-                except ValueError:
-                    print("Invalid input. Please enter numbers only.")
-                
             elif cmd == 'q':
                 break
             else:
                 print("Invalid command")
     
-    def calculate_target_angles(self, target_r, target_theta, target_z, team_r, team_theta):
+    def calculate_target_angles(self, target_r, target_theta_deg, target_z, team_r, team_theta_deg):
         """
         Calculate required azimuth and altitude angles to hit a target
-        Accounting for laser offset (43mm height, 27mm right from azimuth shaft)
+        All angles in degrees, distances in meters
         """
+        # Convert degrees to radians for calculations
+        target_theta = math.radians(target_theta_deg)
+        team_theta = math.radians(team_theta_deg)
+        
         # Convert polar coordinates to Cartesian (centered at arena center)
         target_x = target_r * math.cos(target_theta)
         target_y = target_r * math.sin(target_theta)
@@ -550,7 +435,6 @@ class WorkingTurret:
         
         # Account for laser offset (27mm to the right from azimuth shaft)
         # When turret rotates, the offset rotates with it
-        # The offset creates a lever arm effect
         offset_angle = team_theta + math.pi/2  # Offset is 90° from facing direction (to the right)
         dx_offset = self.laser_offset_x * math.cos(offset_angle)
         dy_offset = self.laser_offset_x * math.sin(offset_angle)
@@ -571,24 +455,24 @@ class WorkingTurret:
         forward_angle = math.atan2(forward_y, forward_x)
         target_angle = math.atan2(dy_adjusted, dx_adjusted)
         
-        azimuth_angle = target_angle - forward_angle
+        azimuth_rad = target_angle - forward_angle
         
         # Normalize azimuth angle to [-π, π]
-        if azimuth_angle > math.pi:
-            azimuth_angle -= 2 * math.pi
-        elif azimuth_angle < -math.pi:
-            azimuth_angle += 2 * math.pi
+        if azimuth_rad > math.pi:
+            azimuth_rad -= 2 * math.pi
+        elif azimuth_rad < -math.pi:
+            azimuth_rad += 2 * math.pi
         
         # Calculate distance to target (horizontal)
         horizontal_distance = math.sqrt(dx_adjusted*dx_adjusted + dy_adjusted*dy_adjusted)
         
         # Calculate altitude angle
         height_diff = target_z - self.laser_height  # Laser is 43mm above ground
-        altitude_angle = math.atan2(height_diff, horizontal_distance)
+        altitude_rad = math.atan2(height_diff, horizontal_distance)
         
-        # Convert to degrees
-        azimuth_deg = math.degrees(azimuth_angle)
-        altitude_deg = math.degrees(altitude_angle)
+        # Convert back to degrees
+        azimuth_deg = math.degrees(azimuth_rad)
+        altitude_deg = math.degrees(altitude_rad)
         
         return azimuth_deg, altitude_deg, horizontal_distance
     
@@ -642,20 +526,23 @@ class WorkingTurret:
                 data = json.loads(response.read().decode())
                 print("✓ JSON data loaded successfully")
                 
+                # Convert JSON data from cm/rad to m/deg
+                data = self.convert_json_units(data)
+                
         except Exception as e:
             print(f"Error loading JSON data: {e}")
             print("Using sample data instead...")
-            # Fallback to sample data
+            # Fallback to sample data (already in m/deg)
             data = {
                 "turrets": {
-                    "1": {"r": 300.0, "theta": 2.580},
-                    "2": {"r": 300.0, "theta": 0.661},
-                    "3": {"r": 300.0, "theta": 5.152}
+                    "1": {"r": 3.0, "theta": 147.8},    # 2.580 rad = 147.8°
+                    "2": {"r": 3.0, "theta": 37.9},     # 0.661 rad = 37.9°
+                    "3": {"r": 3.0, "theta": 295.2},    # 5.152 rad = 295.2°
                 },
                 "globes": [
-                    {"r": 300.0, "theta": 1.015, "z": 20.4},
-                    {"r": 300.0, "theta": 4.512, "z": 32.0},
-                    {"r": 300.0, "theta": 3.979, "z": 10.8}
+                    {"r": 3.0, "theta": 58.2, "z": 0.204},   # 1.015 rad = 58.2°, 20.4 cm = 0.204 m
+                    {"r": 3.0, "theta": 258.5, "z": 0.320},  # 4.512 rad = 258.5°, 32.0 cm = 0.320 m
+                    {"r": 3.0, "theta": 228.0, "z": 0.108},  # 3.979 rad = 228.0°, 10.8 cm = 0.108 m
                 ]
             }
         
@@ -669,14 +556,14 @@ class WorkingTurret:
             team_num = input("\nEnter YOUR team number: ").strip()
             if team_num in data.get("turrets", {}):
                 team_data = data["turrets"][team_num]
-                print(f"✓ Team {team_num} found at position: r={team_data['r']} cm, θ={team_data['theta']:.3f} rad")
+                print(f"✓ Team {team_num} found at position: r={team_data['r']} m, θ={team_data['theta']:.1f}°")
                 break
             else:
                 print(f"Team {team_num} not found in data. Please try again.")
         
         # Get team position
         team_r = team_data['r']
-        team_theta = team_data['theta']
+        team_theta = team_data['theta']  # Already in degrees
         
         # Identify targets (all other turrets and globes)
         targets = []
@@ -687,7 +574,7 @@ class WorkingTurret:
                 targets.append({
                     "name": f"Turret {target_id}",
                     "r": target_data['r'],
-                    "theta": target_data['theta'],
+                    "theta": target_data['theta'],  # degrees
                     "z": self.laser_height  # Ground level target (same height as our laser)
                 })
         
@@ -696,13 +583,13 @@ class WorkingTurret:
             targets.append({
                 "name": f"Globe {i}",
                 "r": globe['r'],
-                "theta": globe['theta'],
-                "z": globe['z']
+                "theta": globe['theta'],  # degrees
+                "z": globe['z']  # meters
             })
         
         print(f"\nFound {len(targets)} targets:")
         for target in targets:
-            print(f"  {target['name']}: r={target['r']} cm, θ={target['theta']:.3f} rad, z={target['z']} cm")
+            print(f"  {target['name']}: r={target['r']} m, θ={target['theta']:.1f}°, z={target['z']*100:.1f} cm")
         
         # Confirm before starting
         print("\n" + "="*40)
@@ -731,7 +618,7 @@ class WorkingTurret:
             )
             
             print(f"\n--- Targeting {target['name']} ---")
-            print(f"Distance: {distance:.1f} cm")
+            print(f"Distance: {distance:.2f} m")
             print(f"Required angles: Az={az_deg:.1f}°, Alt={alt_deg:.1f}°")
             
             # Check if altitude is within limits
@@ -767,6 +654,29 @@ class WorkingTurret:
         self.move_azimuth_safe(-self.azimuth_angle)
         self.move_altitude_safe(-self.altitude_angle)
     
+    def convert_json_units(self, data):
+        """Convert JSON data from cm/rad to m/deg"""
+        converted_data = {"turrets": {}, "globes": []}
+        
+        # Convert turrets
+        if "turrets" in data:
+            for team_id, turret_data in data["turrets"].items():
+                converted_data["turrets"][team_id] = {
+                    "r": turret_data["r"] / 100.0,  # cm to m
+                    "theta": math.degrees(turret_data["theta"])  # rad to deg
+                }
+        
+        # Convert globes
+        if "globes" in data:
+            for globe in data["globes"]:
+                converted_data["globes"].append({
+                    "r": globe["r"] / 100.0,  # cm to m
+                    "theta": math.degrees(globe["theta"]),  # rad to deg
+                    "z": globe["z"] / 100.0  # cm to m
+                })
+        
+        return converted_data
+    
     def mock_competition_mode(self):
         """Mock competition mode - manually input target coordinates"""
         print("\n" + "="*60)
@@ -776,18 +686,18 @@ class WorkingTurret:
         print("Enter target coordinates:")
         
         try:
-            target_r = float(input("Target radius (cm): "))
-            target_theta = float(input("Target angle (radians): "))
-            target_z = float(input("Target height (cm): "))
+            target_r = float(input("Target radius (meters): "))
+            target_theta = float(input("Target angle (degrees): "))
+            target_z = float(input("Target height (meters): "))
             
             # Get team position (assuming at standard position)
             print("\nAssuming turret is at standard position:")
-            print(f"  Radius: {self.turret_radius} cm")
-            print(f"  Angle: 0 rad (facing center)")
-            print(f"  Laser height: {self.laser_height} cm")
+            print(f"  Radius: {self.turret_radius} m")
+            print(f"  Angle: 0° (facing center)")
+            print(f"  Laser height: {self.laser_height*100:.1f} cm")
             
             team_r = self.turret_radius
-            team_theta = 0.0  # Facing center
+            team_theta = 0.0  # Facing center, degrees
             
             # Calculate angles
             az_deg, alt_deg, distance = self.calculate_target_angles(
@@ -798,7 +708,7 @@ class WorkingTurret:
             print(f"\nCalculated angles:")
             print(f"  Azimuth: {az_deg:.1f}°")
             print(f"  Altitude: {alt_deg:.1f}°")
-            print(f"  Distance: {distance:.1f} cm")
+            print(f"  Distance: {distance:.2f} m")
             
             # Check altitude limits
             if alt_deg > self.altitude_max_up:
@@ -877,8 +787,8 @@ def main():
     print("• Laser control via GPIO26")
     print("• Calibration to set origin")
     print("• Manual laser control (on/off/3-second fire)")
-    print("• Manual motor control with simultaneous movement")
-    print("• Competition mode with JSON data")
+    print("• Manual motor control")
+    print("• Competition mode with JSON data (converted to m/deg)")
     print("• Mock competition mode for testing")
     print("="*70)
     
